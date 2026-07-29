@@ -2,46 +2,42 @@
 
 <img src="./assets/zaebal-hero.svg" width="100%" alt="Z.A.E.B.A.L. — self-audit protocol for coding agents">
 
-<br><br>
+<h3>
+<strong>Z</strong>aebal? · <strong>A</strong>udit · <strong>E</strong>rrors ·
+<strong>B</strong>reak · <strong>A</strong>nalyze · <strong>L</strong>eave no assumption
+</h3>
 
-<strong>Read this in other languages</strong>
-
-<br>
-
+<p>
+<strong>Read this in other languages</strong><br>
 <a href="README.md">🇺🇸 English</a> ·
 <a href="README.ru.md">🇷🇺 Русский</a> ·
 <a href="README.zh-CN.md">🇨🇳 简体中文</a>
+</p>
 
-<br><br>
-
+<p>
 <img alt="Python standard library only" src="https://img.shields.io/badge/Python-stdlib_only-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white">
 <img alt="Four agent hosts" src="https://img.shields.io/badge/agent_hosts-4-A78BFA?style=flat-square">
 <img alt="Russian, English and Chinese detection" src="https://img.shields.io/badge/detection-RU_·_EN_·_ZH-22D3EE?style=flat-square">
 <img alt="Fail-open failure mode" src="https://img.shields.io/badge/failure_mode-fail--open-3FB950?style=flat-square">
+</p>
 
-<br><br>
-
-<strong>Profanity-triggered self-audit for coding agents.</strong>
-
-<br><br>
-
+<p>
+<strong>Profanity-triggered self-audit for coding agents.</strong><br>
 Z.A.E.B.A.L. treats user frustration as an operational signal: stop, re-check the
 agent's assumptions, and escalate repeated failures to an independent auditor.
+</p>
 
-<br><br>
-
+<p>
 <a href="#capability-map">Capabilities</a> ·
 <a href="#how-it-works">How it works</a> ·
 <a href="#install">Install</a> ·
 <a href="#configuration">Configuration</a> ·
 <a href="#architecture">Architecture</a>
+</p>
 
 </div>
 
 ---
-
-**Z**aebal? **A**udit. **E**rrors. **B**reak. **A**nalyze.
-**L**eave no assumption.
 
 ## Why it exists
 
