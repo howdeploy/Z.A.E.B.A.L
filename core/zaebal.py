@@ -111,8 +111,8 @@ _ACK = re.compile(
 
 ACK_NOTICE = (
     '<zaebal level="0">\n'
-    "Стрик обнулён: пользователь подтвердил продолжение.\n"
-    "Продолжай по плану, согласованному с человеком.\n"
+    "Streak reset: the user confirmed continuation.\n"
+    "Proceed with the plan agreed with the human.\n"
     "</zaebal>\n"
 )
 
@@ -419,7 +419,7 @@ def transcript_tail(path, max_chars):
 
 def git_summary(cwd):
     if not cwd or not Path(cwd).is_dir():
-        return "(рабочая директория недоступна)"
+        return "(working directory unavailable)"
     def run(*args):
         try:
             r = subprocess.run(
@@ -434,14 +434,14 @@ def git_summary(cwd):
     diff = run("diff")[:4000]  # bounded: the auditor needs evidence, not noise
     log = run("log", "--oneline", "-5")
     if not (status or diffstat or diff or log):
-        return "(не git-репозиторий или git недоступен)"
+        return "(not a git repository or git unavailable)"
     parts = []
     if status:
         parts.append("git status --short:\n" + status[:2000])
     if diffstat:
         parts.append("git diff --stat:\n" + diffstat[:2000])
     if diff:
-        parts.append("git diff (первые 4000 символов):\n" + diff)
+        parts.append("git diff (first 4000 chars):\n" + diff)
     if log:
         parts.append("git log --oneline -5:\n" + log[:1000])
     return "\n\n".join(parts)
@@ -454,30 +454,30 @@ def build_audit_prompt(payload, level, cfg):
     tp = payload.get("transcript_path")
     if tp:
         tail = transcript_tail(tp, int(cfg.get("transcript_tail_chars", 12000)))
-    return f"""Ты — независимый аудитор, вызванный системой Z.A.E.B.A.L.: пользователь ругается на кодинг-агента (уровень эскалации {level} из 3).
+    return f"""You are an independent auditor invoked by the Z.A.E.B.A.L. system: the user is swearing at a coding agent (escalation level {level} of 3).
 
-Ключевое: агент ходит по кругу не от невнимательности — он искренне перестал понимать, в чём проблема. Почти всегда это значит одно: какое-то его убеждение о задаче или коде неверно, а все действия строятся на нём. Это убеждение для него невидимо — он считает его фактом, а не предположением. Твоя задача — найти именно его.
+Key point: an agent goes in circles not from inattention — it has sincerely stopped understanding the problem. Almost always this means one thing: some belief of its about the task or the code is wrong, and every action is built on top of it. That belief is invisible to the agent — it treats it as a fact, not an assumption. Your job is to find exactly that belief.
 
-Признак, по которому искать: агент повторяет по сути одно действие с косметическими вариациями.
+The sign to look for: the agent repeats essentially the same action with cosmetic variations.
 
-Рабочая директория проекта: {cwd or "(неизвестна)"}. При необходимости можешь читать файлы проекта — но не меняй ничего.
+Project working directory: {cwd or "(unknown)"}. You may read project files if needed — but do not change anything.
 
-## Промпт пользователя, на котором сработал триггер (дословно)
+## The user prompt that fired the trigger (verbatim)
 {trigger}
 
-## Хвост транскрипта сессии
-{tail or "(транскрипт недоступен)"}
+## Session transcript tail
+{tail or "(transcript unavailable)"}
 
-## Состояние репозитория
+## Repository state
 {git_summary(cwd)}
 
-Ответь коротко и конкретно (до 250 слов, без пересказа транскрипта):
-1. Что пользователь просил (его словами) и чем он недоволен.
-2. НЕВЕРНОЕ УБЕЖДЕНИЕ агента: что он считает фактом, а это не так или не проверено. Если таких несколько — главное.
-3. Какое действие это убеждение заставляет его повторять по кругу.
-4. Как одним шагом проверить это убеждение: конкретная команда, файл или вопрос пользователю.
+Answer briefly and concretely (up to 250 words, without retelling the transcript):
+1. What the user asked for (in their words) and what they are unhappy about.
+2. The agent's WRONG BELIEF: what it treats as a fact that is not true or not verified. If there are several — the main one.
+3. Which action this belief makes it repeat in a loop.
+4. How to check this belief in one step: a concrete command, file, or question to the user.
 
-Отдельно проверь частый класс «записал ≠ подействовало»: агент создал конфиг, хук, файл инструкций или env-переменную и считает, что они работают, — но система потребляет их из ДРУГОГО пути (например, глобальный AGENTS.md читается из домашней директории harness'а, а не из папки проекта). Сверь реальные пути загрузки, а не предполагаемые."""
+Separately check the frequent "written != took effect" class: the agent created a config, a hook, an instruction file, or an env variable and assumes it works — but the system consumes it from a DIFFERENT path (for example, a global AGENTS.md is read from the harness's home directory, not from the project folder). Verify the real load paths, not the assumed ones."""
 
 
 def run_auditor(auditor, prompt, cfg):
@@ -488,7 +488,7 @@ def run_auditor(auditor, prompt, cfg):
     else:
         builder = AUDITOR_CMDS.get(auditor)
         if builder is None:
-            return None, f"неизвестный аудитор: {auditor}"
+            return None, f"unknown auditor: {auditor}"
         cmd = builder(prompt)
     try:
         r = subprocess.run(
@@ -500,16 +500,16 @@ def run_auditor(auditor, prompt, cfg):
             env={**os.environ, CHILD_ENV_FLAG: "1"},
         )
     except FileNotFoundError:
-        return None, f"CLI аудитора «{auditor}» не найден в PATH"
+        return None, f"auditor CLI '{auditor}' not found in PATH"
     except subprocess.TimeoutExpired:
-        return None, f"аудитор «{auditor}» не ответил за {cfg.get('auditor_timeout_sec', 90)}с"
+        return None, f"auditor '{auditor}' did not respond within {cfg.get('auditor_timeout_sec', 90)}s"
     except Exception as e:
-        return None, f"ошибка запуска аудитора: {e}"
+        return None, f"failed to launch auditor: {e}"
     verdict = (r.stdout or "").strip()
     if r.returncode != 0 and not verdict:
-        return None, f"аудитор «{auditor}» завершился с кодом {r.returncode}: {(r.stderr or '').strip()[:300]}"
+        return None, f"auditor '{auditor}' exited with code {r.returncode}: {(r.stderr or '').strip()[:300]}"
     if not verdict:
-        return None, f"аудитор «{auditor}» вернул пустой ответ"
+        return None, f"auditor '{auditor}' returned an empty response"
     return verdict, None
 
 
@@ -551,17 +551,17 @@ def mode_prompt(host, payload):
             if verdict:
                 verdict_block = (
                     f'\n<zaebal-verdict auditor="{auditor}">\n'
-                    f"ЗАКЛЮЧЕНИЕ ВНЕШНЕГО АУДИТОРА. Это ПРИОРИТЕТНАЯ ГИПОТЕЗА, "
-                    f"а не истина: проверь её первой тем шагом, который предложил "
-                    f"аудитор. Опровержение — только артефактом (файл, прогон "
-                    f"теста), не памятью и не мнением.\n\n"
+                    f"EXTERNAL AUDITOR VERDICT. This is a PRIORITY HYPOTHESIS, "
+                    f"not the truth: check it first, using the step the auditor "
+                    f"proposed. Disproving it is allowed only with an artifact "
+                    f"(a file, a test run), not with memory or opinion.\n\n"
                     f"{verdict}\n</zaebal-verdict>\n"
                 )
             else:
                 verdict_block = (
                     f'\n<zaebal-verdict auditor="{auditor}">\n'
-                    f"Внешний аудитор недоступен ({error}). "
-                    f"Выполняй протокол самостоятельно, с двойной самоцензурой.\n"
+                    f"The external auditor is unavailable ({error}). "
+                    f"Execute the protocol on your own, with double self-censorship.\n"
                     f"</zaebal-verdict>\n"
                 )
 

@@ -2,46 +2,42 @@
 
 <img src="./assets/zaebal-hero.svg" width="100%" alt="Z.A.E.B.A.L. — 编程智能体自审计协议">
 
-<br><br>
+<h3>
+<strong>Z</strong>aebal? · <strong>A</strong>udit · <strong>E</strong>rrors ·
+<strong>B</strong>reak · <strong>A</strong>nalyze · <strong>L</strong>eave no assumption
+</h3>
 
-<strong>其他语言版本</strong>
-
-<br>
-
+<p>
+<strong>其他语言版本</strong><br>
 <a href="README.md">🇺🇸 English</a> ·
 <a href="README.ru.md">🇷🇺 Русский</a> ·
 <a href="README.zh-CN.md">🇨🇳 简体中文</a>
+</p>
 
-<br><br>
-
+<p>
 <img alt="仅使用 Python 标准库" src="https://img.shields.io/badge/Python-stdlib_only-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white">
 <img alt="四个智能体宿主" src="https://img.shields.io/badge/agent_hosts-4-A78BFA?style=flat-square">
 <img alt="俄语、英语和中文检测" src="https://img.shields.io/badge/detection-RU_·_EN_·_ZH-22D3EE?style=flat-square">
 <img alt="Fail-open 失败模式" src="https://img.shields.io/badge/failure_mode-fail--open-3FB950?style=flat-square">
+</p>
 
-<br><br>
-
-<strong>由用户粗口与直接抱怨触发的编程智能体自审计。</strong>
-
-<br><br>
-
+<p>
+<strong>由用户粗口与直接抱怨触发的编程智能体自审计。</strong><br>
 Z.A.E.B.A.L. 把用户的明显不满视为操作信号：停止当前路线、重新检查智能体的
 基本假设，并在错误反复出现时把会话交给独立审计智能体。
+</p>
 
-<br><br>
-
+<p>
 <a href="#功能地图">功能</a> ·
 <a href="#工作原理">工作原理</a> ·
 <a href="#安装">安装</a> ·
 <a href="#配置">配置</a> ·
 <a href="#架构">架构</a>
+</p>
 
 </div>
 
 ---
-
-**Z**aebal? **A**udit. **E**rrors. **B**reak. **A**nalyze.
-**L**eave no assumption.
 
 ## 为什么需要它
 
@@ -236,7 +232,6 @@ python3 -m unittest test_zaebal -v
 ## 已知限制
 
 - 检测器采用启发式规则；讽刺和特殊上下文仍可能造成误报或漏报。
-- 检测器支持 RU/EN/ZH 输入，但当前注入的 L1–L3 协议和外部审计 prompt 使用俄语。
 - 状态锁使用 POSIX `fcntl`；Windows 上的并发 hook 可能丢失更新。
 - Kimi 与 OpenCode 的审计命令不会被 Z.A.E.B.A.L. 技术性地 sandbox；它们依赖
   审计 prompt 以及宿主中已有的限制。

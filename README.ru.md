@@ -2,47 +2,43 @@
 
 <img src="./assets/zaebal-hero.svg" width="100%" alt="Z.A.E.B.A.L. — протокол самоаудита для кодинг-агентов">
 
-<br><br>
+<h3>
+<strong>Z</strong>aebal? · <strong>A</strong>udit · <strong>E</strong>rrors ·
+<strong>B</strong>reak · <strong>A</strong>nalyze · <strong>L</strong>eave no assumption
+</h3>
 
-<strong>Читать на других языках</strong>
-
-<br>
-
+<p>
+<strong>Читать на других языках</strong><br>
 <a href="README.md">🇺🇸 English</a> ·
 <a href="README.ru.md">🇷🇺 Русский</a> ·
 <a href="README.zh-CN.md">🇨🇳 简体中文</a>
+</p>
 
-<br><br>
-
+<p>
 <img alt="Только стандартная библиотека Python" src="https://img.shields.io/badge/Python-stdlib_only-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white">
 <img alt="Четыре агентных хоста" src="https://img.shields.io/badge/agent_hosts-4-A78BFA?style=flat-square">
 <img alt="Детектор русского, английского и китайского" src="https://img.shields.io/badge/detection-RU_·_EN_·_ZH-22D3EE?style=flat-square">
 <img alt="Fail-open режим ошибок" src="https://img.shields.io/badge/failure_mode-fail--open-3FB950?style=flat-square">
+</p>
 
-<br><br>
-
-<strong>Самоаудит кодинг-агентов, который запускается по сигналу ругани пользователя.</strong>
-
-<br><br>
-
+<p>
+<strong>Самоаудит кодинг-агентов, который запускается по сигналу ругани пользователя.</strong><br>
 Z.A.E.B.A.L. воспринимает раздражение пользователя как операционный сигнал: остановиться,
 перепроверить убеждения агента и при повторных ошибках передать сессию независимому
 аудитору.
+</p>
 
-<br><br>
-
+<p>
 <a href="#карта-возможностей">Возможности</a> ·
 <a href="#как-это-работает">Как это работает</a> ·
 <a href="#установка">Установка</a> ·
 <a href="#настройка">Настройка</a> ·
 <a href="#архитектура">Архитектура</a>
+</p>
 
 </div>
 
 ---
-
-**Z**aebal? **A**udit. **E**rrors. **B**reak. **A**nalyze.
-**L**eave no assumption.
 
 ## Зачем это нужно
 
@@ -243,8 +239,6 @@ python3 -m unittest test_zaebal -v
 
 - Детектор эвристический: сарказм и необычный контекст могут дать ложное срабатывание
   или пропуск.
-- Детектор принимает RU/EN/ZH, но инжектируемые протоколы L1–L3 и prompt внешнего
-  аудитора сейчас написаны на русском.
 - Блокировка state использует POSIX `fcntl`; на Windows возможны потери конкурентных
   обновлений.
 - Команды аудиторов Kimi и OpenCode технически не sandbox'ятся самим Z.A.E.B.A.L.:
