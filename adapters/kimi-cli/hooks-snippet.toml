@@ -1,0 +1,6 @@
+# >>> Z.A.E.B.A.L. hook (remove this block to uninstall) >>>
+[[hooks]]
+event = "UserPromptSubmit"
+command = "python3 ~/.zaebal/core/zaebal.py --host kimi"
+timeout = 180
+# <<< Z.A.E.B.A.L. hook <<<

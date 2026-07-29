@@ -1,0 +1,1 @@
+{"session_id": "fixture-claude", "transcript_path": "/tmp/t.jsonl", "cwd": "/home/user/project", "hook_event_name": "UserPromptSubmit", "prompt": "спасибо, теперь добавь тесты к этой функции"}

@@ -1,0 +1,34 @@
+# Chinese profanity. Substring match (no word boundaries in Chinese).
+# Careful: single chars like 操/草/滚 are excluded — too many false positives
+# (操作 = "operate", 滚动 = "scroll"). Lines starting with ~ are raw regex
+# (used for negative lookaheads, e.g. 我操 must not match 我操作).
+~我操(?!作|纵|拟)
+~我草(?!图|稿)
+我肏
+操你
+操蛋
+肏你
+妈的
+他妈的
+妈逼
+尼玛
+草泥马
+傻逼
+沙比
+煞笔
+滚蛋
+滚开
+给我滚
+废物
+混蛋
+王八蛋
+白痴
+脑残
+智障
+蠢货
+贱人
+婊子
+狗屎
+日你
+你妹
+去死

@@ -1,0 +1,7 @@
+{
+  "auditor": "same",
+  "audit_levels": [3],
+  "auditor_timeout_sec": 90,
+  "auditor_command": "",
+  "transcript_tail_chars": 12000
+}

@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Z.A.E.B.A.L. self-audit protocol for coding agents</title>
+  <desc id="desc">A graphite grid showing the flow from a user signal through classification and escalation to an external auditor.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="0.55" stop-color="#111820"/>
+      <stop offset="1" stop-color="#0a0f14"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="danger" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#f43f5e"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M36 0H0V36" fill="none" stroke="#30363d" stroke-width="1" opacity=".42"/>
+    </pattern>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="420" rx="24" fill="url(#bg)"/>
+  <rect width="1200" height="420" rx="24" fill="url(#grid)"/>
+  <rect x="1" y="1" width="1198" height="418" rx="23" fill="none" stroke="#30363d" stroke-width="2"/>
+
+  <circle cx="1034" cy="55" r="150" fill="#22d3ee" opacity=".035"/>
+  <circle cx="151" cy="385" r="190" fill="#a78bfa" opacity=".045"/>
+
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <text x="64" y="54" fill="#8b949e" font-size="13" font-weight="700" letter-spacing="2.2">SELF-AUDIT PROTOCOL FOR CODING AGENTS</text>
+    <text x="64" y="128" fill="#f0f6fc" font-size="64" font-weight="800" letter-spacing="-2">Z.A.E.B.A.L.</text>
+    <rect x="65" y="147" width="486" height="4" rx="2" fill="url(#accent)" filter="url(#glow)"/>
+    <text x="64" y="180" fill="#b1bac4" font-size="18">Audit errors · break loops · leave no assumption</text>
+
+    <g transform="translate(64 230)">
+      <g>
+        <rect width="212" height="90" rx="14" fill="#161b22" stroke="#3c4652"/>
+        <rect width="4" height="90" rx="2" fill="#f97316"/>
+        <text x="24" y="34" fill="#f0f6fc" font-size="15" font-weight="700">01 · USER SIGNAL</text>
+        <text x="24" y="61" fill="#8b949e" font-size="13">RU · EN · ZH profanity</text>
+      </g>
+
+      <path d="M222 45H258" stroke="#58616d" stroke-width="2"/>
+      <path d="m252 38 8 7-8 7" fill="none" stroke="#58616d" stroke-width="2"/>
+
+      <g transform="translate(268)">
+        <rect width="244" height="90" rx="14" fill="#161b22" stroke="#3c4652"/>
+        <rect width="4" height="90" rx="2" fill="#a78bfa"/>
+        <text x="24" y="34" fill="#f0f6fc" font-size="15" font-weight="700">02 · CLASSIFY</text>
+        <text x="24" y="61" fill="#8b949e" font-size="13">praise · directed · ambiguous</text>
+      </g>
+
+      <path d="M522 45H558" stroke="#58616d" stroke-width="2"/>
+      <path d="m552 38 8 7-8 7" fill="none" stroke="#58616d" stroke-width="2"/>
+
+      <g transform="translate(568)">
+        <rect width="216" height="90" rx="14" fill="#161b22" stroke="#3c4652"/>
+        <rect width="4" height="90" rx="2" fill="#22d3ee"/>
+        <text x="24" y="34" fill="#f0f6fc" font-size="15" font-weight="700">03 · ESCALATE</text>
+        <text x="24" y="61" fill="#8b949e" font-size="13">L1 → L2 → L3</text>
+      </g>
+
+      <path d="M794 45H830" stroke="#58616d" stroke-width="2"/>
+      <path d="m824 38 8 7-8 7" fill="none" stroke="#58616d" stroke-width="2"/>
+
+      <g transform="translate(840)">
+        <rect width="232" height="90" rx="14" fill="#161b22" stroke="#3c4652"/>
+        <rect width="4" height="90" rx="2" fill="url(#danger)"/>
+        <text x="24" y="34" fill="#f0f6fc" font-size="15" font-weight="700">04 · AUDIT</text>
+        <text x="24" y="61" fill="#8b949e" font-size="13">independent external agent</text>
+      </g>
+    </g>
+
+    <text x="64" y="382" fill="#6e7681" font-size="12" font-weight="700" letter-spacing="1.2">CLAUDE CODE · CODEX CLI · KIMI CLI · OPENCODE</text>
+    <text x="1136" y="382" fill="#6e7681" font-size="12" font-weight="700" text-anchor="end">FAIL-OPEN · STDLIB ONLY</text>
+  </g>
+</svg>
