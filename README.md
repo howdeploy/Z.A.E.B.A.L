@@ -238,8 +238,6 @@ sandbox arguments, failures, and end-to-end protocol injection.
 
 - Detection is heuristic. Sarcasm and unusual context can still produce false positives
   or false negatives.
-- Detection accepts RU/EN/ZH input, but the injected L1–L3 protocols and auditor prompt
-  are currently written in Russian.
 - State locking uses POSIX `fcntl`; concurrent hooks on Windows can lose updates.
 - The Kimi and OpenCode auditor commands are not technically sandboxed by Z.A.E.B.A.L.;
   they rely on the audit prompt and any restrictions already configured in those hosts.

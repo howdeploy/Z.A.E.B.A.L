@@ -239,7 +239,7 @@ class TestAuditor(TempState):
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p: ["definitely-not-a-real-cli-xyz", p]}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", zaebal.load_config())
         self.assertIsNone(verdict)
-        self.assertIn("не найден", error)
+        self.assertIn("not found", error)
 
     def test_run_auditor_success(self):
         fake = lambda p: [sys.executable, "-c", "print('диагноз: всё сломано')"]
@@ -289,7 +289,7 @@ class TestEndToEnd(TempState):
     def test_l1_protocol_injected(self):
         out = self._prompt("t1", "ты меня заебал")
         self.assertIn('<zaebal level="1">', out)
-        self.assertIn("СТОП", out)
+        self.assertIn("STOP", out)
 
     def test_directed_complaint_with_praise_words_fires(self):
         out = self._prompt("t1b", "ничего не работает, ты меня заебал")
@@ -328,14 +328,14 @@ class TestEndToEnd(TempState):
         self.assertIn('<zaebal level="3">', out)
         self.assertIn('<zaebal-verdict auditor="kimi">', out)
         self.assertIn("вердикт аудитора", out)
-        self.assertIn("ПРИОРИТЕТНАЯ ГИПОТЕЗА", out)
+        self.assertIn("PRIORITY HYPOTHESIS", out)
 
     def test_l3_auditor_failure_is_failopen(self):
         self.set_config(auditor_command="no-such-cli-xyz")
         for i in range(4):
             out = self._prompt("t4", f"ты заебал {i}")
         self.assertIn('<zaebal level="3">', out)
-        self.assertIn("аудитор недоступен", out.lower())
+        self.assertIn("auditor is unavailable", out)
 
     def test_l3_ack_lifecycle(self):
         self.set_config(auditor_command="no-such-cli-xyz")
@@ -348,7 +348,7 @@ class TestEndToEnd(TempState):
         self.assertIn('<zaebal level="3">', out)
         # explicit acknowledgment resets the streak and notifies
         out = self._prompt("t5", "хорошо, давай по плану")
-        self.assertIn("Стрик обнулён", out)
+        self.assertIn("Streak reset", out)
         # next profanity is L1, not instant L3
         out = self._prompt("t5", "ты опять заебал")
         self.assertIn('<zaebal level="1">', out)

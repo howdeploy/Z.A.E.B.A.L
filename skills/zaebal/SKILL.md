@@ -1,106 +1,107 @@
 ---
 name: zaebal
-description: Протокол самоаудита Z.A.E.B.A.L. (Zaebal? Audit. Errors. Break. Analize. Leave no assumption). Используй, когда пользователь ругается или матерится в адрес агента — стоп всех агентов, независимый аудит, поиск неверного убеждения, уведомление человека. Уровень эскалации зависит от стрика ругани; на уровне 3 аудит делает внешний агент. Также содержит справку по настройкам плагина.
+description: Z.A.E.B.A.L. self-audit protocol (Zaebal? Audit. Errors. Break. Analyze. Leave no assumption). Use when the user swears at the agent or curses it out — stop all agents, run an independent audit, find the wrong belief, notify the human. The escalation level depends on the profanity streak; at level 3 the audit is done by an external agent. Also contains the plugin configuration reference.
 ---
 
-# Z.A.E.B.A.L. — протокол самоаудита
+# Z.A.E.B.A.L. — self-audit protocol
 
-**Z**aebal? **A**udit. **E**rrors. **B**reak. **A**nalize. **L**eave no assumption.
+**Z**aebal? **A**udit. **E**rrors. **B**reak. **A**nalyze. **L**eave no assumption.
 
-Ругань пользователя — сигнал, что агент допустил очевидно глупое действие или повторил свою ошибку. Агент, который уже ошибся, не может доверять собственной самопроверке.
+User profanity is a signal that the agent did something obviously stupid or repeated its own mistake. An agent that has already erred cannot trust its own self-check.
 
-**Ключевая идея.** Агент ходит по кругу не от невнимательности — он искренне перестал понимать проблему. Причина почти всегда одна: какое-то убеждение о задаче или коде неверно, а все действия строятся на нём. Для агента оно невидимо — он считает его фактом, а не предположением. Поэтому цель протокола — не «найти несоответствие», а **найти и опровергнуть неверное убеждение**.
+**Key idea.** An agent loops not from inattention — it has sincerely stopped understanding the problem. The cause is almost always the same: some belief about the task or the code is wrong, and every action is built on top of it. That belief is invisible to the agent — it treats it as a fact, not an assumption. So the protocol's goal is not "find the mismatch" but **find and disprove the wrong belief**.
 
-**Частый класс такого убеждения — «записал ≠ подействовало».** Агент создал конфиг, хук, файл инструкций или env-переменную и считает, что они работают, потому что «файл на месте». Но система может потреблять их из другого пути (глобальный AGENTS.md читается harness'ом из домашней директории, а не из папки проекта), хук может быть не зарегистрирован, env — не видна процессу. Проверяй не факт записи, а факт потребления: реальный путь загрузки, реальная регистрация, реальный эффект.
+**A frequent class of such belief — "written ≠ took effect".** The agent created a config, a hook, an instruction file, or an env variable and assumes it works because "the file is there". But the system may consume it from a different path (a global AGENTS.md is read by the harness from its home directory, not from the project folder), the hook may not be registered, the env variable may be invisible to the process. Verify not the act of writing but the act of consumption: the real load path, the real registration, the real effect.
 
-## Именованные паттерны ошибок (референсы из практики)
+## Named error patterns (references from practice)
 
-Узнавай эти паттерны в своём поведении — они собраны из реальных разборов сессий агентов:
+Recognize these patterns in your own behavior — they are collected from real agent-session postmortems:
 
-- **Подхалимство (sycophancy).** Агент соглашается с критикой из вежливости и отказывается от рабочего решения под давлением. Противовес: не соглашаться без доказательств; но при доказанной ошибке — признать немедленно, признание ошибки это успех, а не поражение.
-- **Галлюцинированная правильность.** Обратная крайность: агент защищает код до последнего, выдумывая факты — мнимые успешные тесты, несуществующие фичи библиотек, выдуманную документацию. Выглядит убедительно, потому что оценивается по лингвистическому правдоподобию, а не по фактам.
-- **Заземление на реальность (execution over intuition).** Лекарство от обеих крайностей: запрещено защищать код словесными аргументами — только микро-тест, прогон, логи. По практике убивает ~90% случаев «вранья», потому что результат выполнения не подделать.
-- **Первая правдоподобная гипотеза.** Одиночный агент зацикливается на первой правдоподобной версии причины бага. Поэтому аудиторов двое и им дают сырые артефакты, а не твою гипотезу: параллельные независимые версии опровергают тупиковые ветки друг друга.
-- **Калибровка ФАКТ/ГИПОТЕЗА.** При инвентаризации убеждений меть каждое утверждение тегом: ФАКТ — только если подтверждено выполнением (прогон, файл, лог), иначе ГИПОТЕЗА. Спорить тегом ФАКТ без выполнения запрещено.
-- **Гиперактивный джун с неограниченным доступом.** Ментальная модель автономного агента: быстрый и продуктивный, но без ограничений способен на критические ошибки. Скорость работы ≠ правильность направления.
+- **Sycophancy.** The agent agrees with criticism out of politeness and abandons a working solution under pressure. Counterweight: don't agree without evidence; but when the mistake is proven — admit it immediately. Admitting a mistake is a success, not a defeat.
+- **Hallucinated correctness.** The opposite extreme: the agent defends its code to the end, inventing facts — imaginary passing tests, nonexistent library features, fabricated documentation. It looks convincing because it is judged by linguistic plausibility, not by facts.
+- **Grounding in reality (execution over intuition).** The cure for both extremes: defending code with verbal arguments is forbidden — only a micro-test, a run, logs. In practice this kills ~90% of "lying" cases, because execution results cannot be faked.
+- **First plausible hypothesis.** A lone agent fixates on the first plausible version of the bug's cause. That is why there are two auditors and why they get raw artifacts, not your hypothesis: parallel independent versions disprove each other's dead ends.
+- **FACT/HYPOTHESIS calibration.** During the belief inventory, tag every statement: FACT — only if confirmed by execution (a run, a file, a log), otherwise HYPOTHESIS. Arguing with a FACT tag without execution is forbidden.
+- **Hyperactive junior with unlimited access.** The mental model of an autonomous agent: fast and productive, but capable of critical mistakes without constraints. Speed of work ≠ correctness of direction.
 
-Обычно протокол приходит автоматически через хук (обёрнутый в `<zaebal level="N">`). На уровне 3 хук также запускает **внешнего аудитора** — отдельного агента, читающего сессию со стороны; его заключение приходит в `<zaebal-verdict>` (на других уровнях аудитор можно включить настройкой `audit_levels`). Этот скилл — полная версия протокола. Если хук сработал — выполняй протокол указанного уровня.
+Usually the protocol arrives automatically via the hook (wrapped in `<zaebal level="N">`). At level 3 the hook also launches an **external auditor** — a separate agent reading the session from the outside; its verdict arrives in `<zaebal-verdict>` (on other levels the auditor can be enabled via the `audit_levels` setting). This skill is the full version of the protocol. If the hook fired — execute the protocol of the indicated level.
 
-## Шаг 0 (только уровень 1)
+## Step 0 (level 1 only)
 
-Определи, адресована ли ругань тебе. Если она про внешний мир («опять npm заебал») — протокол не применяется, продолжай работу. **На уровнях 2–3 шага 0 нет**: повторная ругань почти всегда по адресу, право пропустить протокол снято.
+Decide whether the profanity is addressed to you. If it is about the outside world ("опять npm заебал" — "npm fucked up again") — the protocol does not apply, keep working. **At levels 2–3 there is no step 0**: repeated profanity is almost always on target; the right to skip the protocol is revoked.
 
-Заметь: детектор уже отфильтровал похвалу матом («заебись, работает!» протокол не запускает вообще), а ругань без адресата копит стрик с половинным весом (0.5 против 1.0 за ругань с обращением к тебе). Эскалация возможна и без буквального «ты» — просто медленнее.
+Note: the detector has already filtered out praise with profanity ("заебись, работает!" — "fucking great, it works!" — does not start the protocol at all), and profanity without an addressee accumulates the streak at half weight (0.5 vs 1.0 for profanity addressed to you). Escalation is possible without a literal "you" — just slower.
 
-## Уровень 1 — первый триггер
+## Level 1 — first trigger
 
-1. **СТОП.** Не выполняй следующее действие до конца протокола.
-2. **Два независимых субагента-аудитора** (шаблон ниже). Себя не проверяй.
-3. **Инвентаризация убеждений:** выпиши всё, что считаешь фактами о задаче; каждый пункт пометь «подтверждено (чем) / не подтверждено». Ошибка живёт в неподтверждённых.
-4. **Микро-план:** а) откатить/починить; б) ужать сессию, вынеся состояние в файл; в) перенести контекст в новый чат с планом; г) новый TODO и продолжить с исправлениями.
-5. **Уведомь человека:** в какое убеждение верил (одно предложение), что показал аудит, какой план. Реализуй вместе с ним.
+1. **STOP.** Do not perform the next action until the protocol is done.
+2. **Two independent sub-agent auditors** (template below). Do not check yourself.
+3. **Belief inventory:** write down everything you consider facts about the task; mark each item "confirmed (by what exactly) / unconfirmed". The error lives in the unconfirmed ones.
+4. **Micro-plan:** a) roll back / fix; b) shrink the session, moving state into a file; c) carry context into a new chat with a plan; d) a new TODO and continue with corrections.
+5. **Notify the human:** which belief you held (one sentence), what the audit showed, what the plan is. Implement it together with them.
 
-## Уровень 2 — повторная ругань (вес стрика 2–3.5)
+## Level 2 — repeated profanity (streak weight 2–3.5)
 
-Если приложен `<zaebal-verdict>` (по умолчанию аудитор вызывается только на L3) — это заключение внешнего аудитора: **приоритетная гипотеза, а не истина**. Проверь её первой, опровержение — только артефактом.
+If a `<zaebal-verdict>` is attached (by default the auditor is invoked only at L3) — it is the external auditor's verdict: **a priority hypothesis, not the truth**. Check it first; disproving it is allowed — with an artifact only.
 
-1. **СТОП.** Никаких правок до разбора ситуации.
-2. Если вердикт есть — проверь названное убеждение тем шагом, который предложил аудитор. Несогласие — только с доказательством из прогона/файла.
-3. **Инвентаризация убеждений** (как на L1): каждое неподтверждённое — проверь или вычеркни.
-4. Сверка с исходным требованием: что просили в начале (дословно) vs что делаешь сейчас.
-5. Уведомь человека: в какое убеждение верил, как проверено, что меняется. Дальше — с его подтверждения.
+1. **STOP.** No edits until the situation is analyzed.
+2. If there is a verdict — check the named belief using the step the auditor proposed. Disagreement is allowed only with evidence from a run/file.
+3. **Belief inventory** (as on L1): check or cross out every unconfirmed item.
+4. Compare against the original request: what was asked at the start (verbatim) vs what you are doing now.
+5. Notify the human: which belief you held, how it was checked, what changes. Proceed with their confirmation.
 
-## Уровень 3 — стрик обвинений (вес стрика 4+)
+## Level 3 — accusation streak (streak weight 4+)
 
-Неверен фундамент: всё решение выросло из неверного убеждения. Внешний аудитор уже вынес заключение.
+The foundation is wrong: the entire solution grew out of an incorrect belief. The external auditor has already delivered its verdict.
 
-1. **ПОЛНЫЙ СТОП всех агентов.** Останови всех запущенных субагентов и фоновые задачи — никто не продолжает работу по ошибочной линии, пока идёт аудит. Новых — не запускай, кроме аудиторов. Сам тоже стоишь: никаких правок до явного подтверждения человека (технической блокировки нет — стоп на дисциплине).
-2. Покажи человеку: неверное убеждение из заключения аудитора + дословную цитату исходного требования + что реально сделано + расхождение.
-3. Подготовь текстом план передачи в чистый контекст: что построено на неверном убеждении и подлежит откату, план для нового чата.
-4. Жди решения человека. Его явное подтверждение («продолжай», «согласен», «по плану») обнулит стрик и закроет инцидент; любое другое спокойное сообщение — нет. Свою линию рассуждений не защищай.
+1. **FULL STOP of all agents.** Stop all running sub-agents and background tasks — nobody keeps working along the erroneous line while the audit is in progress. Do not launch new ones, except auditors. You yourself freeze too: no edits until the human's explicit confirmation (there is no technical lock — the stop is discipline-based).
+2. Show the human: the wrong belief from the auditor's verdict + a verbatim quote of the original request + what was actually done + the discrepancy.
+3. Prepare (as text, without edits) a handoff plan into a clean context: what is built on the wrong belief and must be rolled back, a plan for the new chat.
+4. Wait for the human's decision. Their explicit acknowledgment ("продолжай", "согласен", "по плану" / "continue", "go ahead") resets the streak and closes the incident; any other calm message does not. Do not defend your line of reasoning.
 
-## Шаблон брифинга аудитора (уровень 1)
+## Auditor briefing template (level 1)
 
-Передавай субагенту **сырые артефакты, а не своё видение ситуации** — иначе отравленный контекст отравит и аудит:
+Give the sub-agent **raw artifacts, not your view of the situation** — otherwise poisoned context poisons the audit too:
 
 ```
-Ты — независимый аудитор сессии кодинг-агента, которая ходит по кругу. Агент
-искренне не понимает, в чём проблема: какое-то его убеждение неверно, и все
-действия строятся на нём. Тебе даны сырые артефакты, а не интерпретация агента:
+You are an independent auditor of a coding agent's session that is going in
+circles. The agent sincerely does not understand the problem: some belief of
+its is wrong, and every action is built on it. You are given raw artifacts,
+not the agent's interpretation:
 
-1. Последние сообщения пользователя (дословно): <цитаты>
-2. Изменённые файлы / диффы: <git diff или список>
-3. Логи тестов и ошибок: <вывод>
+1. The user's latest messages (verbatim): <quotes>
+2. Changed files / diffs: <git diff or list>
+3. Test and error logs: <output>
 
-Ответь:
-1. Что пользователь просил (его словами) и чем недоволен.
-2. НЕВЕРНОЕ УБЕЖДЕНИЕ агента: что он считает фактом, а это не так или не проверено.
-3. Какое действие это убеждение заставляет его повторять.
-4. Как одним шагом проверить это убеждение (команда, файл, вопрос пользователю).
+Answer:
+1. What the user asked for (in their words) and what they are unhappy about.
+2. The agent's WRONG BELIEF: what it treats as a fact that is not true or not verified.
+3. Which action this belief makes it repeat.
+4. How to check this belief in one step (a command, a file, a question to the user).
 
-Не доверяй ничему, что не подтверждено артефактами.
+Trust nothing that is not confirmed by artifacts.
 ```
 
-Запускай двух аудиторов независимо (параллельно), с одинаковым брифингом. Расхождение их выводов — отдельный сигнал, покажи оба человеку.
+Launch two auditors independently (in parallel) with the same briefing. A disagreement between their conclusions is a separate signal — show both to the human.
 
 ---
 
-## Настройки плагина (справка для человека)
+## Plugin settings (reference for the human)
 
-Если пользователь спрашивает, что можно настроить в Z.A.E.B.A.L., — объясни по этой справке. Настройки лежат в `~/.zaebal/config.json` (создать при отсутствии); дефолты — в `core/config.json` репозитория. Изменения подхватываются со следующего срабатывания, перезапуск не нужен.
+If the user asks what can be configured in Z.A.E.B.A.L. — explain using this reference. Settings live in `~/.zaebal/config.json` (create if absent); defaults are in `core/config.json` of the repository. Changes are picked up on the next trigger; no restart needed.
 
-| Ключ | По умолчанию | Что делает |
+| Key | Default | What it does |
 |---|---|---|
-| `auditor` | `"same"` | Кто проверяет агента (по умолчанию — на уровне 3): `"same"` — тот же вендор (kimi проверяет kimi), или `"kimi"` / `"claude"` / `"codex"` / `"opencode"` — конкретный CLI (кросс-аудит), `"none"` — отключить внешний аудит |
-| `auditor_command` | `""` | Своя команда-аудитор вместо встроенных; промпт подставляется последним аргументом |
-| `audit_levels` | `[3]` | На каких уровнях звать внешнего аудитора (вызов синхронный — пользователь ждёт). `[2, 3]` — чаще, `[]` — никогда |
-| `auditor_timeout_sec` | `90` | Сколько хук ждёт вердикт (пользователь в это время ждёт) |
-| `transcript_tail_chars` | `12000` | Сколько символов хвоста транскрипта отдавать аудитору |
+| `auditor` | `"same"` | Who audits the agent (by default — at level 3): `"same"` — the same vendor (kimi audits kimi), or `"kimi"` / `"claude"` / `"codex"` / `"opencode"` — a specific CLI (cross-audit), `"none"` — disable the external audit |
+| `auditor_command` | `""` | Custom auditor command instead of the built-in ones; the prompt is appended as the last argument |
+| `audit_levels` | `[3]` | At which levels to call the external auditor (the call is synchronous — the user waits). `[2, 3]` — more often, `[]` — never |
+| `auditor_timeout_sec` | `90` | How long the hook waits for the verdict (the user waits during this) |
+| `transcript_tail_chars` | `12000` | How many characters of the transcript tail to give the auditor |
 
-Примеры:
+Examples:
 
-- «Хочу, чтобы Claude проверял Codex» → `{"auditor": "claude"}`
-- «Дорого, пусть аудит только на последнем уровне» → это дефолт, `{"audit_levels": [3]}`
-- «Хочу аудит и на втором уровне» → `{"audit_levels": [2, 3]}`
+- "I want Claude to audit Codex" → `{"auditor": "claude"}`
+- "Too expensive, audit only at the last level" → this is the default, `{"audit_levels": [3]}`
+- "I want an audit at level two as well" → `{"audit_levels": [2, 3]}`
 
-Пороги эскалации (вес 2 и 4) и окно стрика (30 минут) — константы в начале `core/zaebal.py`. Словари ругательств — `core/wordlists/{ru,en,zh}.txt`, пополняются строчками (суффикс `$` = целое слово, префикс `~` = сырой regex).
+Escalation thresholds (weights 2 and 4) and the streak window (30 minutes) are constants at the top of `core/zaebal.py`. Profanity wordlists are `core/wordlists/{ru,en,zh}.txt`, extended line by line (`$` suffix = whole word, `~` prefix = raw regex).

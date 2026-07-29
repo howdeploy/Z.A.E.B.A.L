@@ -232,7 +232,6 @@ python3 -m unittest test_zaebal -v
 ## 已知限制
 
 - 检测器采用启发式规则；讽刺和特殊上下文仍可能造成误报或漏报。
-- 检测器支持 RU/EN/ZH 输入，但当前注入的 L1–L3 协议和外部审计 prompt 使用俄语。
 - 状态锁使用 POSIX `fcntl`；Windows 上的并发 hook 可能丢失更新。
 - Kimi 与 OpenCode 的审计命令不会被 Z.A.E.B.A.L. 技术性地 sandbox；它们依赖
   审计 prompt 以及宿主中已有的限制。
