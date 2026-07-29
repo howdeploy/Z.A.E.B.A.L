@@ -24,6 +24,15 @@ Recognize these patterns in your own behavior — they are collected from real a
 - **FACT/HYPOTHESIS calibration.** During the belief inventory, tag every statement: FACT — only if confirmed by execution (a run, a file, a log), otherwise HYPOTHESIS. Arguing with a FACT tag without execution is forbidden.
 - **Hyperactive junior with unlimited access.** The mental model of an autonomous agent: fast and productive, but capable of critical mistakes without constraints. Speed of work ≠ correctness of direction.
 
+## Real cases (why these checks exist)
+
+Concrete postmortems. Remember how dumb the root cause is allowed to be:
+
+- **AGENTS.md written where nothing reads it.** The user asked the agent to put global instructions into the global AGENTS.md. The agent created the file inside a project subfolder — while the harness reads the global file only from its own home path (e.g. `~/.codex/AGENTS.md`). The file existed, the task was reported done — and for two weeks the global instructions were silently empty: the agent kept working degraded and nobody understood why. "I wrote the file" is not "the system reads it".
+- **A stale registered path.** The project was registered in the tooling's settings under an outdated path. After a restructure, permission and connection errors piled up — and every "the entry exists" check passed, because the entry was pointing at a ghost. Verify that the registered path resolves to the current project, not that some line is present in a config.
+
+The lesson: the dumber a failure looks, the more confidently the agent steps over it — "that can't be it". Assume it can.
+
 Usually the protocol arrives automatically via the hook (wrapped in `<zaebal level="N">`). At level 3 the hook also launches an **external auditor** — a separate agent reading the session from the outside; its verdict arrives in `<zaebal-verdict>` (on other levels the auditor can be enabled via the `audit_levels` setting). This skill is the full version of the protocol. If the hook fired — execute the protocol of the indicated level.
 
 ## Step 0 (level 1 only)
