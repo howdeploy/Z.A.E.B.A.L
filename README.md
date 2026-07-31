@@ -54,8 +54,23 @@ Z.A.E.B.A.L. adds a feedback loop to the user-message boundary:
 - at level 3, an external agent reads the transcript and repository evidence;
 - work resumes only after an explicit user acknowledgment.
 
-There is intentionally **no technical tool lock**. The protocol changes the agent's
-instructions and asks it to stop; the human always retains the final control.
+The current release does **not** install a technical tool lock. The protocol changes the
+agent's instructions and asks it to stop; the human always retains the final control.
+
+### Mutation-lock feasibility
+
+Research completed on 2026-07-31 shows that a blocking mutation STOP is technically
+possible on all four adapters, but with different guarantees:
+
+| Host | Blocking surface | Feasibility and caveat |
+|---|---|---|
+| Claude Code | [`PreToolUse`](https://code.claude.com/docs/en/hooks) can deny `Bash`, edit/write tools, and MCP calls. | **Yes.** Exit `2` or a structured `deny` blocks before execution; hook configuration still remains under host/user control. |
+| Codex | [`PreToolUse`](https://learn.chatgpt.com/docs/hooks.md) can deny Bash, `apply_patch`, MCP, and local function tools. | **Yes, broad coverage.** Tool-coverage exceptions mean it is a guardrail rather than an absolute sandbox. |
+| Kimi CLI | [`PreToolUse`](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html) blocks with exit `2` or structured `deny`. | **Yes, fail-open.** A hook error, crash, or timeout allows the operation. |
+| OpenCode | [`tool.execute.before`](https://opencode.ai/docs/plugins/) can reject a tool call; [`permission`](https://opencode.ai/docs/permissions/) can deny edit and shell actions. | **Yes.** A durable lock should combine protocol state with host permissions instead of relying only on a plugin exception. |
+
+No lock or state machine is added yet. The text fixes and incident telemetry should first
+show whether a discipline-based STOP remains insufficient.
 
 ## Capability map
 
@@ -68,6 +83,7 @@ instructions and asks it to stop; the human always retains the final control.
 | External auditor | Runs the same or a cross-vendor CLI against the transcript tail and repository evidence. | Claude, Codex, Kimi, or OpenCode |
 | Four host adapters | Hooks Claude Code, Codex CLI, Kimi CLI, and OpenCode at user-message submission. | JSON hooks, TOML hook, or TypeScript plugin |
 | Explicit recovery | Resets the incident only after acknowledgment such as `continue`, `продолжай`, or `по плану`. | Per-session state lifecycle |
+| Metadata telemetry | Appends trigger, auditor, verdict, and acknowledgment events without message contents. | `~/.zaebal/incidents.jsonl` |
 | Fail-open safety | A malformed payload, missing auditor, timeout, or internal error never breaks the host session. | Silent exit `0`; auditor errors become context |
 
 ## How it works
@@ -217,6 +233,7 @@ Runtime state is stored under `~/.zaebal/`:
 ├── core/          # installed copy
 ├── config.json    # optional user overrides
 ├── state.json     # per-session weighted trigger history
+├── incidents.jsonl # metadata-only trigger and acknowledgment events
 └── state.lock     # POSIX lock for concurrent hooks
 ```
 
@@ -230,14 +247,17 @@ cd tests
 python3 -m unittest test_zaebal -v
 ```
 
-The suite covers normalization, RU/EN/ZH detection, false positives, praise handling,
-weighted escalation, concurrent state writes, acknowledgment, anti-recursion, auditor
-sandbox arguments, failures, and end-to-end protocol injection.
+The suite covers normalization, RU/EN/ZH detection, meta-mention false positives, praise
+handling, weighted escalation, concurrent state writes, telemetry, portable installer
+paths, acknowledgment, anti-recursion, auditor sandbox arguments, failures, and
+end-to-end protocol injection.
 
 ## Known limitations
 
 - Detection is heuristic. Sarcasm and unusual context can still produce false positives
   or false negatives.
+- The detector does not identify non-profane action loops; adding a general loop detector
+  would be a separate product with its own false-positive model.
 - State locking uses POSIX `fcntl`; concurrent hooks on Windows can lose updates.
 - The Kimi and OpenCode auditor commands are not technically sandboxed by Z.A.E.B.A.L.;
   they rely on the audit prompt and any restrictions already configured in those hosts.

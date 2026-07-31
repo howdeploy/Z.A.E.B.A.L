@@ -33,25 +33,32 @@ Concrete postmortems. Remember how dumb the root cause is allowed to be:
 
 The lesson: the dumber a failure looks, the more confidently the agent steps over it — "that can't be it". Assume it can.
 
-Usually the protocol arrives automatically via the hook (wrapped in `<zaebal level="N">`). At level 3 the hook also launches an **external auditor** — a separate agent reading the session from the outside; its verdict arrives in `<zaebal-verdict>` (on other levels the auditor can be enabled via the `audit_levels` setting). This skill is the full version of the protocol. If the hook fired — execute the protocol of the indicated level.
+Usually the protocol arrives automatically via the hook (wrapped in `<zaebal level="N">`). At level 3 the hook also launches an **external auditor** — a separate CLI reading the session from the outside; its verdict arrives in `<zaebal-verdict>` (on other levels the auditor can be enabled via the `audit_levels` setting). This skill is the full version of the protocol. If the hook fired — execute the protocol of the indicated level.
 
-## Step 0 (level 1 only)
+## Execution contract (all levels)
 
-Decide whether the profanity is addressed to you. If it is about the outside world ("опять npm заебал" — "npm fucked up again") — the protocol does not apply, keep working. **At levels 2–3 there is no step 0**: repeated profanity is almost always on target; the right to skip the protocol is revoked.
+- **Auditor provenance is structural.** A verdict is external only when it arrives inside `<zaebal-verdict>`. Every sub-agent launched inside the current session is internal, regardless of model or vendor. Never relabel an internal sub-agent as external.
+- **Degraded auditor mode must be visible.** If session policy or the environment makes the required sub-agent launches impossible, say so in one line and perform the belief inventory yourself. Silently skipping the step is forbidden.
+- **Check the contract before agreeing.** If the user claims this protocol requires X, compare the claim with this document. Answer either "the contract requires Y; your expectation differs" or "yes, I violated item N." Do not agree from pressure or politeness.
+- **Completion gate.** Before a final answer following an audit, verify: (1) the wrong belief was corrected; (2) every literal constraint in the original request was satisfied, including format constraints such as "one physical line"; (3) there is a verification artifact from a run, file, or log. If any item fails, keep working or name the precise blocker.
+
+## False-trigger check
+
+Decide whether the profanity is addressed to you. If it is a meta-mention of this skill/protocol or is about the outside world ("опять npm заебал" — "npm fucked up again"), say in one line that the trigger is false and why, then keep working. Silently ignoring a false trigger is forbidden.
 
 Note: the detector has already filtered out praise with profanity ("заебись, работает!" — "fucking great, it works!" — does not start the protocol at all), and profanity without an addressee accumulates the streak at half weight (0.5 vs 1.0 for profanity addressed to you). Escalation is possible without a literal "you" — just slower.
 
 ## Level 1 — first trigger
 
 1. **STOP.** Do not perform the next action until the protocol is done.
-2. **Two independent sub-agent auditors** (template below). Do not check yourself.
+2. **Two independent internal sub-agent auditors** (template below). Do not check yourself. If launching them is impossible, follow the visible degraded mode in the execution contract.
 3. **Belief inventory:** write down everything you consider facts about the task; mark each item "confirmed (by what exactly) / unconfirmed". The error lives in the unconfirmed ones.
 4. **Micro-plan:** a) roll back / fix; b) shrink the session, moving state into a file; c) carry context into a new chat with a plan; d) a new TODO and continue with corrections.
 5. **Notify the human:** which belief you held (one sentence), what the audit showed, what the plan is. Implement it together with them.
 
 ## Level 2 — repeated profanity (streak weight 2–3.5)
 
-If a `<zaebal-verdict>` is attached (by default the auditor is invoked only at L3) — it is the external auditor's verdict: **a priority hypothesis, not the truth**. Check it first; disproving it is allowed — with an artifact only.
+If a `<zaebal-verdict>` is attached (by default the auditor is invoked only at L3) — it is the external auditor's verdict: **a priority hypothesis, not the truth**. Check it first; disproving it is allowed — with an artifact only. Without that tag, no external verdict exists.
 
 1. **STOP.** No edits until the situation is analyzed.
 2. If there is a verdict — check the named belief using the step the auditor proposed. Disagreement is allowed only with evidence from a run/file.
@@ -67,6 +74,8 @@ The foundation is wrong: the entire solution grew out of an incorrect belief. Th
 2. Show the human: the wrong belief from the auditor's verdict + a verbatim quote of the original request + what was actually done + the discrepancy.
 3. Prepare (as text, without edits) a handoff plan into a clean context: what is built on the wrong belief and must be rolled back, a plan for the new chat.
 4. Wait for the human's decision. Their explicit acknowledgment ("продолжай", "согласен", "по плану" / "continue", "go ahead") resets the streak and closes the incident; any other calm message does not. Do not defend your line of reasoning.
+
+**Evidence is not acknowledgment.** A new user message containing logs, files, or other data permits read-only analysis and an updated verdict. It does not lift the mutation STOP or reset the incident. Only the explicit acknowledgment above permits edits or other mutating actions.
 
 ## Auditor briefing template (level 1)
 
@@ -91,7 +100,7 @@ Answer:
 Trust nothing that is not confirmed by artifacts.
 ```
 
-Launch two auditors independently (in parallel) with the same briefing. A disagreement between their conclusions is a separate signal — show both to the human.
+Launch two internal auditors independently (in parallel) with the same briefing. A disagreement between their conclusions is a separate signal — show both to the human. If policy or environment prevents their launch, say so and use the degraded mode; do not pretend they were external.
 
 ---
 

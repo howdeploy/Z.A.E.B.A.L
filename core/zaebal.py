@@ -39,6 +39,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("ZAEBAL_STATE_DIR", str(Path.home() / ".zaebal")))
 STATE_FILE = STATE_DIR / "state.json"
 STATE_LOCK = STATE_DIR / "state.lock"
+INCIDENTS_FILE = STATE_DIR / "incidents.jsonl"
 CONFIG_USER = STATE_DIR / "config.json"
 CONFIG_DEFAULT = BASE_DIR / "config.json"
 
@@ -102,6 +103,20 @@ _COMPLAINT = re.compile(
     r"|still|again|broken|wrong)\b"
     r"|сколько можно|не работает|doesn'?t work|not working|\bне то\b|\bне так\b"
 )
+# The product name itself contains a Russian profanity root. Meta-discussion
+# about the skill must not look like a full-weight complaint merely because it
+# also contains "your reaction". This check deliberately uses the raw source:
+# normalization removes the quotes that distinguish a name from an insult.
+_META_MARKER = re.compile(
+    r"\b(?:скилл|хук|протокол|плагин|аудит|skill|hook|protocol|plugin|audit)\w*\b",
+    re.IGNORECASE,
+)
+_SELF_NAME = re.compile(r"(?<!\w)(?:заебал|zaebal)(?!\w)", re.IGNORECASE)
+_QUOTED_SELF_NAME = re.compile(
+    r"""["'`«“‘]\s*(?:заебал|zaebal)\s*["'`»”’]""",
+    re.IGNORECASE,
+)
+_META_NAME_DISTANCE = 80
 # explicit acknowledgment: closes the incident (streak reset)
 _ACK = re.compile(
     r"\b(?:ладно|хорошо|давай|продолжай|продолжаем|согласен|принято|принимаю"
@@ -189,11 +204,49 @@ def load_patterns(base_dir=None):
     return patterns
 
 
+def profanity_matches(variants, patterns):
+    """Return wordlist matches as (language, start, end) tuples."""
+    matches = []
+    for pattern, lang in patterns:
+        matches.extend(
+            (lang, match.start(), match.end())
+            for match in pattern.finditer(variants[lang + "_raw"])
+        )
+    return matches
+
+
 def contains_profanity(variants, patterns):
-    return any(p.search(variants[lang + "_raw"]) for p, lang in patterns)
+    return bool(profanity_matches(variants, patterns))
 
 
-def classify(variants, patterns):
+def _is_meta_self_mention(source_text, matches, variants):
+    """True for a single, literal self-name mention in meta-discussion."""
+    if not source_text or len(matches) != 1:
+        return False
+    raw = unicodedata.normalize("NFKC", source_text).lower()
+    names = list(_SELF_NAME.finditer(raw))
+    if len(names) != 1:
+        return False
+    normalized_names = list(re.finditer(r"\bзаебал\b", variants["ru_raw"]))
+    lang, match_start, match_end = matches[0]
+    if not (
+        lang == "ru"
+        and len(normalized_names) == 1
+        and match_start == normalized_names[0].start()
+        and match_end <= normalized_names[0].end()
+    ):
+        return False
+    if _QUOTED_SELF_NAME.search(raw):
+        return True
+    markers = list(_META_MARKER.finditer(raw))
+    return any(
+        max(marker.start(), names[0].start()) - min(marker.end(), names[0].end())
+        <= _META_NAME_DISTANCE
+        for marker in markers
+    )
+
+
+def classify(variants, patterns, source_text=None):
     """Two-stage trigger: wordlist is only a recall filter.
 
     clean     -> no profanity
@@ -206,12 +259,15 @@ def classify(variants, patterns):
     Addressee is checked FIRST: "ничего не работает, ты меня заебал" is
     directed even though it contains the word "работает".
     """
-    if not contains_profanity(variants, patterns):
+    matches = profanity_matches(variants, patterns)
+    if not matches:
         return "clean"
+    complained = _COMPLAINT.search(variants["ru"]) or _COMPLAINT.search(variants["en"])
     if _SECOND_PERSON.search(variants["ru"]) or _SECOND_PERSON.search(variants["en"]):
+        if not complained and _is_meta_self_mention(source_text, matches, variants):
+            return "ambiguous"
         return "directed"
     praised = _PRAISE.search(variants["ru"]) or _PRAISE.search(variants["en"])
-    complained = _COMPLAINT.search(variants["ru"]) or _COMPLAINT.search(variants["en"])
     if praised and not complained:
         return "praise"
     return "ambiguous"
@@ -371,6 +427,29 @@ def acknowledge(session_id):
     return True
 
 
+def record_incident(session_id, level, kind, weight,
+                    auditor_invoked=False, verdict_received=False, ack=False,
+                    now=None):
+    """Append metadata-only telemetry. Logging failures never block the hook."""
+    event = {
+        "ts": now if now is not None else time.time(),
+        "session_id": session_id,
+        "level": level,
+        "kind": kind,
+        "weight": weight,
+        "auditor_invoked": bool(auditor_invoked),
+        "verdict_received": bool(verdict_received),
+        "ack": bool(ack),
+    }
+    try:
+        with _locked():
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(INCIDENTS_FILE, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception:
+        pass  # fail-open
+
+
 # ---------------------------------------------------------------- auditor
 
 def resolve_auditor(host, cfg):
@@ -528,7 +607,7 @@ def mode_prompt(host, payload):
     patterns = load_patterns()
     variants = (make_variants(text) if text
                 else {k: "" for k in ("ru", "en", "zh", "ru_raw", "en_raw", "zh_raw")})
-    kind = classify(variants, patterns) if text else "clean"
+    kind = classify(variants, patterns, text) if text else "clean"
 
     if kind in ("clean", "praise"):
         # incident closes only on explicit acknowledgment (or genuine praise),
@@ -536,19 +615,28 @@ def mode_prompt(host, payload):
         acked = (kind == "praise"
                  or _ACK.search(variants["ru"]) or _ACK.search(variants["en"]))
         if acked and acknowledge(session_id):
+            record_incident(
+                session_id, 0, "praise" if kind == "praise" else "ack", 0.0,
+                ack=True,
+            )
             sys.stdout.write(ACK_NOTICE)
         return 0
 
-    _, level = record_trigger(session_id, weight=weight_for(kind))
+    weight = weight_for(kind)
+    _, level = record_trigger(session_id, weight=weight)
 
     verdict_block = ""
+    auditor_invoked = False
+    verdict_received = False
     if level in cfg.get("audit_levels", []):
         auditor = resolve_auditor(host, cfg)
         if auditor:
+            auditor_invoked = True
             verdict, error = run_auditor(
                 auditor, build_audit_prompt(payload, level, cfg), cfg
             )
             if verdict:
+                verdict_received = True
                 verdict_block = (
                     f'\n<zaebal-verdict auditor="{auditor}">\n'
                     f"EXTERNAL AUDITOR VERDICT. This is a PRIORITY HYPOTHESIS, "
@@ -565,6 +653,11 @@ def mode_prompt(host, payload):
                     f"</zaebal-verdict>\n"
                 )
 
+    record_incident(
+        session_id, level, kind, weight,
+        auditor_invoked=auditor_invoked,
+        verdict_received=verdict_received,
+    )
     protocol = (BASE_DIR / "protocol" / f"L{level}.md").read_text(encoding="utf-8").strip()
     sys.stdout.write(f'<zaebal level="{level}">\n{protocol}\n</zaebal>\n{verdict_block}')
     return 0

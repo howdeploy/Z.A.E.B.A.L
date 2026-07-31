@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 CORE_DIR = Path(__file__).resolve().parent.parent / "core"
+PROJECT_DIR = CORE_DIR.parent
 sys.path.insert(0, str(CORE_DIR))
 
 import zaebal  # noqa: E402
@@ -18,15 +20,20 @@ class TempState(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self._old = (zaebal.STATE_DIR, zaebal.STATE_FILE, zaebal.STATE_LOCK, zaebal.CONFIG_USER)
+        self._old = (
+            zaebal.STATE_DIR, zaebal.STATE_FILE, zaebal.STATE_LOCK,
+            zaebal.INCIDENTS_FILE, zaebal.CONFIG_USER,
+        )
         zaebal.STATE_DIR = Path(self.tmp.name)
         zaebal.STATE_FILE = Path(self.tmp.name) / "state.json"
         zaebal.STATE_LOCK = Path(self.tmp.name) / "state.lock"
+        zaebal.INCIDENTS_FILE = Path(self.tmp.name) / "incidents.jsonl"
         zaebal.CONFIG_USER = Path(self.tmp.name) / "config.json"
 
     def tearDown(self):
         (zaebal.STATE_DIR, zaebal.STATE_FILE,
-         zaebal.STATE_LOCK, zaebal.CONFIG_USER) = self._old
+         zaebal.STATE_LOCK, zaebal.INCIDENTS_FILE,
+         zaebal.CONFIG_USER) = self._old
 
 
 class TestNormalize(unittest.TestCase):
@@ -109,7 +116,7 @@ class TestClassify(unittest.TestCase):
         cls.patterns = zaebal.load_patterns()
 
     def kind(self, text):
-        return zaebal.classify(zaebal.make_variants(text), self.patterns)
+        return zaebal.classify(zaebal.make_variants(text), self.patterns, text)
 
     def test_praise_is_not_a_trigger(self):
         self.assertEqual(self.kind("заебись, работает!"), "praise")
@@ -134,6 +141,23 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(self.kind("вы опять всё сломали, сука"), "directed")
         self.assertEqual(self.kind("Codex, какого хуя это опять сломано"), "directed")
         self.assertEqual(self.kind("you broke it again, fuck"), "directed")
+
+    def test_meta_self_mention_is_not_directed(self):
+        kind = self.kind('скилл "заебал" и твоя реакция')
+        self.assertNotEqual(kind, "directed")
+        self.assertLessEqual(zaebal.weight_for(kind), 0.5)
+
+    def test_meta_word_does_not_hide_a_real_complaint(self):
+        self.assertEqual(self.kind("твой скилл заебал, не работает"), "directed")
+
+    def test_meta_name_does_not_hide_an_unrelated_profanity_match(self):
+        self.assertEqual(
+            self.kind('skill "zaebal" and your fucking reaction'),
+            "directed",
+        )
+
+    def test_directed_regression(self):
+        self.assertEqual(self.kind("ты меня заебал"), "directed")
 
     def test_ambiguous(self):
         self.assertEqual(self.kind("опять npm заебал"), "ambiguous")
@@ -198,6 +222,122 @@ class TestAcknowledge(TempState):
 
     def test_ack_noop(self):
         self.assertFalse(zaebal.acknowledge("s"))
+
+
+class TestTelemetry(TempState):
+    def test_incident_is_metadata_only(self):
+        zaebal.record_incident(
+            "session-1", 2, "directed", 1.0,
+            auditor_invoked=True, verdict_received=False, now=123.0,
+        )
+        raw = zaebal.INCIDENTS_FILE.read_text()
+        event = json.loads(raw)
+        self.assertEqual(
+            set(event),
+            {
+                "ts", "session_id", "level", "kind", "weight",
+                "auditor_invoked", "verdict_received", "ack",
+            },
+        )
+        self.assertEqual(event["session_id"], "session-1")
+        self.assertNotIn("prompt", raw)
+
+
+class TestPortablePaths(unittest.TestCase):
+    def test_installer_and_adapters_have_no_machine_specific_home(self):
+        paths = [
+            PROJECT_DIR / "install.sh",
+            PROJECT_DIR / "uninstall.sh",
+            PROJECT_DIR / "adapters/claude-code/hooks-snippet.json",
+            PROJECT_DIR / "adapters/codex/hooks.json",
+            PROJECT_DIR / "adapters/kimi-cli/hooks-snippet.toml",
+            PROJECT_DIR / "adapters/opencode/zaebal.ts",
+        ]
+        personal_home = re.compile(
+            r"(?:/home/[^/$\"'`\s]+/|/Users/[^/$\"'`\s]+/|[A-Za-z]:\\Users\\[^\\\s]+\\)"
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIsNone(personal_home.search(path.read_text(encoding="utf-8")))
+
+    def test_runtime_paths_are_derived_portably(self):
+        installer = (PROJECT_DIR / "install.sh").read_text(encoding="utf-8")
+        opencode = (
+            PROJECT_DIR / "adapters/opencode/zaebal.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn('dirname "${BASH_SOURCE[0]}"', installer)
+        self.assertIn('DEST="$HOME/.zaebal"', installer)
+        self.assertIn("join(homedir(), \".zaebal\"", opencode)
+
+    def test_installer_bootstraps_an_empty_portable_home(self):
+        with tempfile.TemporaryDirectory() as home:
+            portable_home = Path(home)
+            for relative in (
+                ".claude", ".codex", ".kimi-code", ".config/opencode",
+            ):
+                (portable_home / relative).mkdir(parents=True)
+            result = subprocess.run(
+                ["bash", str(PROJECT_DIR / "install.sh")],
+                cwd=PROJECT_DIR,
+                env={**os.environ, "HOME": home},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed = [
+                portable_home / ".zaebal/core/zaebal.py",
+                portable_home / ".agents/skills/zaebal/SKILL.md",
+                portable_home / ".claude/settings.json",
+                portable_home / ".codex/hooks.json",
+                portable_home / ".kimi-code/config.toml",
+                portable_home / ".config/opencode/plugins/zaebal.ts",
+            ]
+            for path in installed:
+                with self.subTest(path=path):
+                    self.assertTrue(path.is_file())
+            configs = "\n".join(
+                path.read_text(encoding="utf-8") for path in installed[2:]
+            )
+            self.assertNotIn(home, configs)
+
+
+class TestProtocolContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.levels = {
+            level: (
+                PROJECT_DIR / "core/protocol" / f"L{level}.md"
+            ).read_text(encoding="utf-8")
+            for level in (1, 2, 3)
+        }
+        cls.skill = (
+            PROJECT_DIR / "skills/zaebal/SKILL.md"
+        ).read_text(encoding="utf-8")
+
+    def test_degraded_internal_auditor_mode_is_explicit(self):
+        self.assertIn("prevents sub-agent launch", self.levels[1])
+        self.assertIn("Silently skipping", self.levels[1])
+        self.assertIn("Every sub-agent", self.skill)
+
+    def test_external_auditor_has_structural_provenance(self):
+        for level, protocol in self.levels.items():
+            with self.subTest(level=level):
+                self.assertIn("<zaebal-verdict>", protocol)
+                self.assertIn("internal", protocol)
+
+    def test_evidence_does_not_unlock_mutations(self):
+        for text in (self.levels[3], self.skill):
+            self.assertIn("Evidence is not acknowledgment", text)
+            self.assertIn("read-only analysis", text)
+            self.assertIn("does not lift the mutation STOP", text)
+
+    def test_false_trigger_contract_check_and_completion_gate_are_injected(self):
+        for level, protocol in self.levels.items():
+            with self.subTest(level=level):
+                self.assertIn("False-trigger check", protocol)
+                self.assertIn("Contract check", protocol)
+                self.assertIn("Completion gate", protocol)
 
 
 class TestTranscriptTail(unittest.TestCase):
@@ -364,6 +504,28 @@ class TestEndToEnd(TempState):
         self._prompt("t7", "ладно, продолжай")     # ack -> reset
         out = self._prompt("t7", "ты опять заебал")
         self.assertIn('<zaebal level="1">', out)
+
+    def test_trigger_and_ack_are_journaled(self):
+        prompt = "ты меня заебал"
+        self._prompt("telemetry", prompt)
+        events = [
+            json.loads(line)
+            for line in zaebal.INCIDENTS_FILE.read_text().splitlines()
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["kind"], "directed")
+        self.assertEqual(events[0]["weight"], 1.0)
+        self.assertFalse(events[0]["ack"])
+        self.assertNotIn(prompt, zaebal.INCIDENTS_FILE.read_text())
+
+        self._prompt("telemetry", "ладно, продолжай")
+        events = [
+            json.loads(line)
+            for line in zaebal.INCIDENTS_FILE.read_text().splitlines()
+        ]
+        self.assertTrue(events[-1]["ack"])
+        self.assertEqual(events[-1]["kind"], "ack")
+        self.assertEqual(events[-1]["level"], 0)
 
     def test_session_fallback_separates_projects(self):
         # no session_id: streaks must not share one "unknown" bucket

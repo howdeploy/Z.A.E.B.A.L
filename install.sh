@@ -53,7 +53,10 @@ PYEOF
 }
 
 backup() {  # $1 = config file about to be modified
-  [ -f "$1" ] && cp "$1" "$1.bak" && echo "[backup]    $1 -> $1.bak"
+  if [ -f "$1" ]; then
+    cp "$1" "$1.bak"
+    echo "[backup]    $1 -> $1.bak"
+  fi
 }
 
 if [ -d "$HOME/.claude" ]; then

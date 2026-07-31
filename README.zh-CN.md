@@ -54,8 +54,21 @@ Z.A.E.B.A.L. 在用户消息入口加入反馈闭环：
 - 在 L3，外部智能体会读取会话记录和仓库证据；
 - 只有用户明确确认后，工作才会继续。
 
-系统有意不对工具做技术封锁。协议通过上下文要求智能体停止，最终控制权始终
+当前版本不安装技术性工具锁。协议通过上下文要求智能体停止，最终控制权始终
 留在用户手中。
+
+### Mutation lock 可行性
+
+2026-07-31 的调研表明，四个适配器都能在技术上阻断修改，但保证程度不同：
+
+| 宿主 | 阻断机制 | 结论与限制 |
+|---|---|---|
+| Claude Code | [`PreToolUse`](https://code.claude.com/docs/en/hooks) 可拒绝 `Bash`、编辑/写入工具和 MCP 调用。 | **可行。** 退出码 `2` 或 structured `deny` 会在执行前阻断；hook 配置仍由宿主/用户控制。 |
+| Codex | [`PreToolUse`](https://learn.chatgpt.com/docs/hooks.md) 可拒绝 Bash、`apply_patch`、MCP 和本地函数工具。 | **可行，覆盖较广。** 工具覆盖仍有例外，因此它是 guardrail，不是绝对 sandbox。 |
+| Kimi CLI | [`PreToolUse`](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html) 可通过退出码 `2` 或 structured `deny` 阻断。 | **可行，但 fail-open。** hook 报错、崩溃或超时会放行操作。 |
+| OpenCode | [`tool.execute.before`](https://opencode.ai/docs/plugins/) 可拒绝工具调用；[`permission`](https://opencode.ai/docs/permissions/) 可禁止编辑与 shell。 | **可行。** 持久锁应结合协议状态与宿主 permissions，而不只依赖 plugin 异常。 |
+
+暂不加入锁或 state machine；先由文本修复和事件日志证明基于纪律的 STOP 是否仍然不足。
 
 ## 功能地图
 
@@ -68,6 +81,7 @@ Z.A.E.B.A.L. 在用户消息入口加入反馈闭环：
 | 外部审计智能体 | 使用同厂商或跨厂商 CLI 检查会话尾部与仓库证据。 | Claude、Codex、Kimi 或 OpenCode |
 | 四个宿主适配器 | 在 Claude Code、Codex CLI、Kimi CLI 与 OpenCode 提交用户消息时触发。 | JSON hooks、TOML hook 或 TypeScript plugin |
 | 明确恢复机制 | 只有收到 `continue`、`продолжай` 或 `по плану` 等确认才关闭事件。 | 每个会话独立的状态生命周期 |
+| 元数据事件日志 | 记录 trigger、auditor、verdict 与 ack，不保存消息内容。 | `~/.zaebal/incidents.jsonl` |
 | Fail-open 安全 | 错误 payload、缺失审计器、超时或内部异常都不会破坏宿主会话。 | 静默退出码 `0`；审计错误写入上下文 |
 
 ## 工作原理
@@ -213,6 +227,7 @@ Python 核心是运行时行为的唯一来源。宿主适配器只负责把各�
 ├── core/          # 已安装的核心副本
 ├── config.json    # 可选用户覆盖配置
 ├── state.json     # 按会话保存的加权触发历史
+├── incidents.jsonl # 不含消息内容的 trigger/ack 事件
 └── state.lock     # 并发 hook 使用的 POSIX 锁
 ```
 
@@ -226,12 +241,15 @@ cd tests
 python3 -m unittest test_zaebal -v
 ```
 
-测试覆盖标准化、RU/EN/ZH 检测、误报、正面评价、加权升级、并发状态写入、用户确认、
-防递归、审计器 sandbox 参数、失败处理，以及端到端协议注入。
+测试覆盖标准化、RU/EN/ZH 检测、元信息误报、正面评价、加权升级、并发状态写入、
+遥测、可移植安装路径、用户确认、防递归、审计器 sandbox 参数、失败处理，以及
+端到端协议注入。
 
 ## 已知限制
 
 - 检测器采用启发式规则；讽刺和特殊上下文仍可能造成误报或漏报。
+- 检测器不会识别不含粗口的动作循环；通用 loop detector 是另一个产品，并有自己
+  的误报模型。
 - 状态锁使用 POSIX `fcntl`；Windows 上的并发 hook 可能丢失更新。
 - Kimi 与 OpenCode 的审计命令不会被 Z.A.E.B.A.L. 技术性地 sandbox；它们依赖
   审计 prompt 以及宿主中已有的限制。
