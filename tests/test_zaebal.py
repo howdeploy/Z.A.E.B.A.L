@@ -339,6 +339,23 @@ class TestProtocolContract(unittest.TestCase):
                 self.assertIn("Contract check", protocol)
                 self.assertIn("Completion gate", protocol)
 
+    def test_runtime_identity_gate_is_in_every_protocol_and_skill(self):
+        for level, protocol in self.levels.items():
+            with self.subTest(level=level):
+                self.assertIn("all candidate", protocol)
+                self.assertIn("workstation", protocol)
+                self.assertIn("server", protocol)
+        self.assertIn("Runtime identity before runtime health", self.skill)
+        self.assertIn("The healthy bot that was not serving traffic", self.skill)
+
+    def test_documentation_before_syntax_churn_is_in_every_protocol_and_skill(self):
+        for level, protocol in self.levels.items():
+            with self.subTest(level=level):
+                self.assertIn("official documentation or internet", protocol)
+                self.assertIn("flags", protocol)
+        self.assertIn("Documentation before syntax churn", self.skill)
+        self.assertIn("The command repaired by permutation", self.skill)
+
 
 class TestTranscriptTail(unittest.TestCase):
     def test_non_dict_jsonl_lines_do_not_crash(self):
@@ -374,6 +391,13 @@ class TestAuditor(TempState):
         self.assertIn("ты заебал", prompt)
         self.assertIn("сделай фичу", prompt)
         os.unlink(tp)
+
+    def test_build_prompt_requires_runtime_and_documentation_checks(self):
+        prompt = zaebal.build_audit_prompt({}, 3, zaebal.load_config())
+        self.assertIn("all candidate runtime instances", prompt)
+        self.assertIn("local workstation", prompt)
+        self.assertIn("official documentation or the internet", prompt)
+        self.assertIn("permutation of flags", prompt)
 
     def test_run_auditor_missing_cli(self):
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p: ["definitely-not-a-real-cli-xyz", p]}):

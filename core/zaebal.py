@@ -556,7 +556,10 @@ Answer briefly and concretely (up to 250 words, without retelling the transcript
 3. Which action this belief makes it repeat in a loop.
 4. How to check this belief in one step: a concrete command, file, or question to the user.
 
-Separately check the frequent "written != took effect" class: the agent created a config, a hook, an instruction file, or an env variable and assumes it works — but the system consumes it from a DIFFERENT path (for example, a global AGENTS.md is read from the harness's home directory, not from the project folder). Verify the real load paths, not the assumed ones."""
+Separately check these frequent classes:
+- "written != took effect": the agent created a config, a hook, an instruction file, or an env variable and assumes it works — but the system consumes it from a DIFFERENT path (for example, a global AGENTS.md is read from the harness's home directory, not from the project folder). Verify the real load paths, not the assumed ones.
+- "healthy != serving the intended traffic": if observed service behavior contradicts tests, status, or logs, enumerate all candidate runtime instances on the local workstation and every in-scope server, including similarly named containers/services. Trace a real request to the exact process, image/version, command, configuration, credentials, network, and port. A stale duplicate, wrong route, old build, or launch conflict is a primary hypothesis.
+- "syntax roulette instead of documentation": if a command/tool failed, check the installed version/help and make a direct query to current official documentation or the internet before accepting another permutation of flags, subcommands, or word order as a fix."""
 
 
 def run_auditor(auditor, prompt, cfg):

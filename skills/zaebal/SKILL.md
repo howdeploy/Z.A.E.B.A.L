@@ -23,6 +23,8 @@ Recognize these patterns in your own behavior — they are collected from real a
 - **First plausible hypothesis.** A lone agent fixates on the first plausible version of the bug's cause. That is why there are two auditors and why they get raw artifacts, not your hypothesis: parallel independent versions disprove each other's dead ends.
 - **FACT/HYPOTHESIS calibration.** During the belief inventory, tag every statement: FACT — only if confirmed by execution (a run, a file, a log), otherwise HYPOTHESIS. Arguing with a FACT tag without execution is forbidden.
 - **Hyperactive junior with unlimited access.** The mental model of an autonomous agent: fast and productive, but capable of critical mistakes without constraints. Speed of work ≠ correctness of direction.
+- **Green status fallacy / wrong runtime instance.** `running`, a green healthcheck, passing tests, and quiet logs prove only that the inspected process is alive. They do not prove that real traffic reaches that process or that it runs the intended build and configuration. When observed behavior contradicts the healthy picture, enumerate every candidate instance on the local workstation and every in-scope server, including similarly named containers and services. Trace the real request to the exact process/container, image digest or version, command, environment, mounts, network, and published port. Treat a stale duplicate, an old build, a wrong routing target, and launch conflicts as primary hypotheses.
+- **Syntax roulette instead of documentation.** A command fails, so the agent keeps rearranging flags, subcommands, and word order from memory. After reproducing the exact failure once, consult the installed version's help and the current official documentation or internet in a direct query before trying another syntax. Match the documentation to the installed version. Cosmetic command permutations without documentation evidence are forbidden.
 
 ## Real cases (why these checks exist)
 
@@ -30,6 +32,8 @@ Concrete postmortems. Remember how dumb the root cause is allowed to be:
 
 - **AGENTS.md written where nothing reads it.** The user asked the agent to put global instructions into the global AGENTS.md. The agent created the file inside a project subfolder — while the harness reads the global file only from its own home path (e.g. `~/.codex/AGENTS.md`). The file existed, the task was reported done — and for two weeks the global instructions were silently empty: the agent kept working degraded and nobody understood why. "I wrote the file" is not "the system reads it".
 - **A stale registered path.** The project was registered in the tooling's settings under an outdated path. After a restructure, permission and connection errors piled up — and every "the entry exists" check passed, because the entry was pointing at a ghost. Verify that the registered path resolves to the current project, not that some line is present in a config.
+- **The healthy bot that was not serving traffic.** A Telegram bot did not answer, but the inspected container was running and its logs had no errors. Another similarly named container on the production host still ran an older image, while routing or the bot token sent updates there. The local workstation also had a live copy competing for polling. Checking only the intended container made every signal look green. Enumerating all local and server-side instances, then tracing one real update to its consumer, exposed the wrong target and launch conflict.
+- **The command repaired by permutation.** A tool rejected a command, and the agent repeatedly moved the same flags before and after the subcommand. One direct check of the installed version's `--help` and official documentation showed that the option had been renamed or was unsupported in that version. The problem was the agent's unverified command model, not flag ordering.
 
 The lesson: the dumber a failure looks, the more confidently the agent steps over it — "that can't be it". Assume it can.
 
@@ -40,6 +44,8 @@ Usually the protocol arrives automatically via the hook (wrapped in `<zaebal lev
 - **Auditor provenance is structural.** A verdict is external only when it arrives inside `<zaebal-verdict>`. Every sub-agent launched inside the current session is internal, regardless of model or vendor. Never relabel an internal sub-agent as external.
 - **Degraded auditor mode must be visible.** If session policy or the environment makes the required sub-agent launches impossible, say so in one line and perform the belief inventory yourself. Silently skipping the step is forbidden.
 - **Check the contract before agreeing.** If the user claims this protocol requires X, compare the claim with this document. Answer either "the contract requires Y; your expectation differs" or "yes, I violated item N." Do not agree from pressure or politeness.
+- **Runtime identity before runtime health.** If a user-visible service fails while tests, status, or logs look healthy, do not accept the healthy picture as closure. Enumerate all candidate instances on every in-scope machine — the workstation and servers — and account for similar names, duplicate containers/services, versions, ports, routing, credentials, and process ownership. Prove which exact instance consumes a real request. Checking only the instance you intended to launch is forbidden.
+- **Documentation before syntax churn.** If a command or tool does not work, reproduce the exact failure once, then make a direct check against local help/version and current official documentation or the internet before changing flags, subcommand order, or spelling. Record what the documented syntax is and whether it applies to the installed version. Guessing multiple variants in a loop is forbidden.
 - **Completion gate.** Before a final answer following an audit, verify: (1) the wrong belief was corrected; (2) every literal constraint in the original request was satisfied, including format constraints such as "one physical line"; (3) there is a verification artifact from a run, file, or log. If any item fails, keep working or name the precise blocker.
 
 ## False-trigger check
@@ -98,6 +104,10 @@ Answer:
 4. How to check this belief in one step (a command, a file, a question to the user).
 
 Trust nothing that is not confirmed by artifacts.
+
+Mandatory checks when relevant:
+- If a service's observed behavior contradicts tests/status/logs, enumerate every local and server-side runtime instance and prove which exact one receives real traffic. Similar names and apparently healthy containers are evidence to inspect, not reasons to dismiss a duplicate.
+- If a command/tool fails, consult its installed-version help and current official documentation or internet before proposing another arrangement of flags or subcommands.
 ```
 
 Launch two internal auditors independently (in parallel) with the same briefing. A disagreement between their conclusions is a separate signal — show both to the human. If policy or environment prevents their launch, say so and use the degraded mode; do not pretend they were external.
