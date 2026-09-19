@@ -228,8 +228,13 @@ def make_variants(text):
     "<lang>_raw"  punctuation kept; used for junk-tolerant root matching.
     """
     out = {}
-    # Measurements such as 45s must not become profanity through 4->a, 5->s.
-    # Keep mixed leet words (f4ck, за3бал) available for normal detection.
+    # Measurements such as 45s and dimensions such as 360x640 must not become
+    # profanity through 3->е, 6->б, 0->о. Keep mixed leet words (f4ck,
+    # за3бал) available for normal detection.
+    text = re.sub(
+        r"(?<!\w)\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?(?:\s*(?:px|p))?(?!\w)",
+        " ", text, flags=re.IGNORECASE,
+    )
     text = re.sub(r"(?<!\w)\d+(?:[.,]\d+)?(?:ms|s|sec|min|h|kb|mb|gb|hz|мс|с|мин|ч|кб|мб|гб|гц)?\b",
                   " ", text, flags=re.IGNORECASE)
     for lang, table in (("ru", LEET_RU), ("en", LEET_EN), ("zh", LEET_EN)):

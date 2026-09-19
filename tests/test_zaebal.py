@@ -113,6 +113,9 @@ class TestDetection(unittest.TestCase):
         self.assertFalse(self.hit("статья о художнике"))
         self.assertFalse(self.hit("отчет о худших кейсах"))
         self.assertFalse(self.hit("вопрос о хуках"))
+        self.assertFalse(self.hit("360×640"))
+        self.assertFalse(self.hit("360x640"))
+        self.assertFalse(self.hit("720p для портретного ролика — это 720×1280, а не 360×640"))
 
     def test_junk_inside_one_word_still_matches(self):
         self.assertTrue(self.hit("з*а*е*б*а*л"))
