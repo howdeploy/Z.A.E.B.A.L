@@ -247,6 +247,30 @@ class TestClassify(unittest.TestCase):
             "directed",
         )
 
+    def test_calm_complaint_addressed_to_the_agent_is_a_half_weight_trigger(self):
+        for text in (
+            "ты опять сломал сборку",
+            "ты не то сделал, я просил только экспорт",
+            "you ignored what I asked and changed the schema",
+            "это снова не работает, ты не читаешь мои сообщения",
+        ):
+            self.assertEqual(self.kind(text), "complaint", text)
+        self.assertEqual(zaebal.weight_for("complaint"), 0.5)
+
+    def test_questions_praise_and_unaddressed_complaints_stay_clean(self):
+        for text in (
+            "ты можешь проверить, почему опять не работает?",
+            "опять не работает",                      # no addressee
+            "спасибо, теперь работает",
+            "проверь, не сломал ли я сборку",          # first person
+            "изучи репо и скилл https://github.com/example/zaebal",
+        ):
+            self.assertNotEqual(self.kind(text), "complaint", text)
+            self.assertNotEqual(self.kind(text), "directed", text)
+
+    def test_profanity_still_outranks_the_calm_class(self):
+        self.assertEqual(self.kind("ты опять сломал, заебал"), "directed")
+
     def test_directed_regression(self):
         self.assertEqual(self.kind("ты меня заебал"), "directed")
 
@@ -1585,12 +1609,57 @@ class TestEndToEnd(TempState):
         self.assertFalse(zaebal.STATE_FILE.exists())
         self.assertFalse(zaebal.INCIDENTS_FILE.exists())
 
+    def test_first_weak_signal_gets_light_protocol_then_full(self):
+        out = self._prompt("light", "бля, опять не то")
+        self.assertIn('<zaebal level="1" mode="light">', out)
+        self.assertIn("--dismiss-trigger=", out)
+        self.assertIn("original_request", out)
+        self.assertNotIn("Two independent", out)
+        self.assertNotIn("Launch two fresh internal auditors", out)
+        out = self._prompt("light", "бля, снова мимо")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertIn("Launch two fresh internal auditors", out)
+
+    def test_directed_first_signal_is_never_light(self):
+        out = self._prompt("full", "ты меня заебал")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertNotIn('mode="light"', out)
+
+    def test_light_mode_can_be_disabled(self):
+        self.set_config(light_first_signal=False)
+        out = self._prompt("nolight", "бля, опять не то")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertNotIn('mode="light"', out)
+
+    def test_light_mode_never_calls_the_external_auditor(self):
+        self.set_config(audit_levels=[1], auditor_command=(
+            f"{sys.executable} -c \"print({VALID_AUDIT_VERDICT!r})\""))
+        out = self._prompt("light-aud", "бля, опять не то")
+        self.assertIn('mode="light"', out)
+        self.assertNotIn("<zaebal-verdict", out)
+        out = self._prompt("light-aud", "бля, снова")
+        self.assertIn("<zaebal-verdict", out)
+
+    def test_calm_complaint_escalates_end_to_end_and_respects_switches(self):
+        out = self._prompt("calm", "ты опять сломал сборку")
+        self.assertIn('<zaebal level="1" mode="light">', out)
+        events = [json.loads(l) for l in zaebal.INCIDENTS_FILE.read_text().splitlines()]
+        self.assertEqual(events[-1]["kind"], "complaint")
+        self.assertEqual(events[-1]["weight"], 0.5)
+        out = self._prompt("calm", "ты снова не то сделал")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertNotIn('mode="light"', out)
+        self.set_config(calm_complaints=False)
+        self.assertEqual(self._prompt("calm2", "ты опять сломал сборку"), "")
+        self.set_config(auto_trigger=False)
+        self.assertEqual(self._prompt("calm3", "ты опять сломал сборку"), "")
+
     def test_praise_silences_core(self):
         self.assertEqual(self._prompt("tp", "заебись, работает!"), "")
         self.assertEqual(self._prompt("tp", "this is fucking great"), "")
 
     def test_ambiguous_builds_half_weight_streak(self):
-        self.assertIn('<zaebal level="1">', self._prompt("ta", "опять npm заебал"))
+        self.assertIn('<zaebal level="1" mode="light">', self._prompt("ta", "опять npm заебал"))
         self.assertIn('<zaebal level="1">', self._prompt("ta", "опять docker заебал"))
         self.assertIn('<zaebal level="1">', self._prompt("ta", "блядь, опять не то"))
         out = self._prompt("ta", "да блять сколько можно")  # weight 2.0 -> L2

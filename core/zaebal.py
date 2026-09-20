@@ -64,6 +64,8 @@ DEFAULT_CONFIG = {
     "auditor_prompt_via": "argv",  # custom auditor_command only: "argv" (appended) or "stdin"
     "transcript_tail_chars": 12000,
     "agent_context_tail_chars": 2500,
+    "light_first_signal": True,  # streak weight < 1 gets the short L1-light protocol
+    "calm_complaints": True,     # second-person complaint without profanity counts 0.5
     "transcript_snapshot_chars": 200000,  # rendered text snapshot for auditors; 0 disables
     "original_request_chars": 600,        # first user message quoted in the locator
 }
@@ -142,6 +144,16 @@ _COMPLAINT = re.compile(
     r"\b(?:опять|снова|сломал|сломано?|поломал|глючит|падает"
     r"|still|again|broken|wrong|но|but)\b|\b(?:говн|дерьм)"
     r"|сколько можно|не работает|doesn'?t work|not working|\bне то\b|\bне так\b"
+)
+# Calm complaint addressed to the agent, no profanity: "ты опять сломал сборку",
+# "you ignored what I asked". Narrower than _COMPLAINT on purpose: that list
+# only cancels praise, this one starts a half-weight streak on its own.
+_CALM_COMPLAINT = re.compile(
+    r"\b(?:опять|снова|сломал[аи]?|поломал[аи]?|сколько\s+можно|не\s+то\s+сделал"
+    r"|не\s+слушаешь|не\s+читаешь|не\s+понял|я\s+же\s+(?:сказал|просил|писал)"
+    r"|я\s+(?:не\s+)?просил|не\s+это|не\s+работает"
+    r"|again|still\s+(?:broken|wrong|not)|broke|you\s+(?:ignored|missed|didn\s*t|did\s+not)"
+    r"|not\s+what\s+i\s+asked|wrong)\b"
 )
 _SELF_NAME = re.compile(r"(?<!\w)(?:заебал|zaebal)(?!\w)", re.IGNORECASE)
 # Material explicitly presented as a quote/example is evidence for the task,
@@ -392,7 +404,7 @@ def classify(variants, patterns, source_text=None):
         variants = make_variants(source_text)
     matches = profanity_matches(variants, patterns)
     if not matches:
-        return "clean"
+        return "complaint" if is_calm_complaint(variants, source_text) else "clean"
     complained = _COMPLAINT.search(variants["ru"]) or _COMPLAINT.search(variants["en"])
     if _SECOND_PERSON.search(variants["ru"]) or _SECOND_PERSON.search(variants["en"]):
         return "directed"
@@ -402,8 +414,18 @@ def classify(variants, patterns, source_text=None):
     return "ambiguous"
 
 
+def is_calm_complaint(variants, source_text=None):
+    """Second person + complaint marker, no question, no profanity."""
+    if source_text is not None and re.search(r"[?？]", source_text):
+        return False  # "ты можешь проверить, почему опять не работает?" is a question
+    addressed = _SECOND_PERSON.search(variants["ru"]) or _SECOND_PERSON.search(variants["en"])
+    if not addressed:
+        return False
+    return bool(_CALM_COMPLAINT.search(variants["ru"]) or _CALM_COMPLAINT.search(variants["en"]))
+
+
 def weight_for(kind):
-    return {"directed": 1.0, "ambiguous": 0.5}.get(kind, 0.0)
+    return {"directed": 1.0, "ambiguous": 0.5, "complaint": 0.5}.get(kind, 0.0)
 
 
 def is_acknowledgment(source_text):
@@ -505,7 +527,8 @@ def validate_config(cfg):
         and all(isinstance(arg, str) and arg for arg in command)
     ):
         out["auditor_command"] = command
-    for key in ("allow_unsafe_auditor", "auto_trigger", "manual_trigger"):
+    for key in ("allow_unsafe_auditor", "auto_trigger", "manual_trigger",
+                "light_first_signal", "calm_complaints"):
         if isinstance(cfg.get(key), bool):
             out[key] = cfg[key]
 
@@ -1454,7 +1477,9 @@ def classify_payload(payload, cfg=None):
     variants = (make_variants(scoped_text) if scoped_text
                 else {k: "" for k in ("ru", "en", "zh", "ru_raw", "en_raw", "zh_raw")})
     kind = classify(variants, patterns, scoped_text) if scoped_text else "clean"
-    if not cfg["auto_trigger"] and kind in ("directed", "ambiguous"):
+    if kind == "complaint" and not cfg.get("calm_complaints", True):
+        kind = "clean"
+    if not cfg["auto_trigger"] and kind in ("directed", "ambiguous", "complaint"):
         kind = "disabled"
     return text, scoped_text, kind
 
@@ -1491,14 +1516,18 @@ def mode_prompt(host, payload):
         return 0
 
     weight = weight_for(kind)
+    light = False
     if kind == "manual":
         stamps = _session_entry(_load_state(), session_id)["stamps"]
         level = level_for(sum(stamp[1] for stamp in _norm_stamps(stamps, time.time())))
         trigger_id = None
     else:
-        _, level, trigger_id = record_trigger(
+        total, level, trigger_id = record_trigger(
             session_id, weight=weight, return_token=True
         )
+        # A lone unaddressed swear or a calm complaint (weight < 1) gets the
+        # short protocol; the full one with auditors follows on repetition.
+        light = bool(cfg.get("light_first_signal", True)) and level == 1 and total < 1.0
 
     raw_transcript = resolve_transcript_path(payload, host)
     snapshot = write_transcript_snapshot(raw_transcript, host, session_id, cfg)
@@ -1508,7 +1537,7 @@ def mode_prompt(host, payload):
     verdict_block = ""
     auditor_invoked = False
     verdict_received = False
-    if level in cfg.get("audit_levels", []):
+    if level in cfg.get("audit_levels", []) and not light:
         auditor = resolve_auditor(host, cfg)
         if auditor:
             auditor_invoked = auditor_will_invoke(auditor, cfg)
@@ -1558,11 +1587,13 @@ def mode_prompt(host, payload):
         "--dismiss-trigger=" + trigger_id,
     ], env={"ZAEBAL_STATE_DIR": str(STATE_DIR)}) if trigger_id else ("Manual audit: no trigger to roll back." if kind == "manual"
                            else "No rollback command: trigger state was not saved."))
-    protocol = (BASE_DIR / "protocol" / f"L{level}.md").read_text(encoding="utf-8").strip()
+    protocol_file = "L1-light.md" if light else f"L{level}.md"
+    protocol = (BASE_DIR / "protocol" / protocol_file).read_text(encoding="utf-8").strip()
     protocol = protocol.replace("{{DISMISS_COMMAND}}", dismiss)
     context_block = build_agent_context_block(payload, cfg, host)
+    mode_attr = ' mode="light"' if light else ""
     sys.stdout.write(
-        f'{context_block}<zaebal level="{level}">\n{protocol}\n</zaebal>\n'
+        f'{context_block}<zaebal level="{level}"{mode_attr}>\n{protocol}\n</zaebal>\n'
         f'{verdict_block}'
     )
     return 0
