@@ -2,10 +2,19 @@
   "auto_trigger": true,
   "manual_trigger": true,
   "auditor": "same",
-  "audit_levels": [3],
+  "audit_levels": [
+    3
+  ],
   "auditor_timeout_sec": 90,
   "auditor_command": "",
   "allow_unsafe_auditor": false,
+  "auditor_model": "",
+  "auditor_prompt_via": "argv",
+  "mutation_lock": true,
+  "light_first_signal": true,
+  "calm_complaints": true,
   "transcript_tail_chars": 12000,
-  "agent_context_tail_chars": 2500
+  "agent_context_tail_chars": 2500,
+  "transcript_snapshot_chars": 200000,
+  "original_request_chars": 600
 }

@@ -1297,6 +1297,29 @@ class TestAuditor(TempState):
             self.assertEqual(seen["input"], "ты меня заебал: секрет")
         self.assertEqual(seen["cmd"][-1], "-")  # codex reads the prompt from stdin via "-"
 
+    def test_claude_auditor_gets_read_access_to_transcript_and_snapshot_dirs(self):
+        payload = {"transcript_path": "/h/.claude/projects/p/s.jsonl",
+                   "transcript_snapshot_path": "/h/.zaebal/transcripts/claude/s.txt",
+                   "cwd": str(PROJECT_DIR)}
+        dirs = zaebal.evidence_dirs(payload)
+        self.assertEqual(dirs, [str(PROJECT_DIR), "/h/.claude/projects/p",
+                                "/h/.zaebal/transcripts/claude"])
+        self.assertNotIn("/nonexistent", zaebal.evidence_dirs({"cwd": "/nonexistent"}))
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=VALID_AUDIT_VERDICT, stderr="")
+
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.run_auditor("claude", "p", zaebal.load_config(), dirs=dirs)
+        self.assertEqual(seen["cmd"][-(len(dirs) + 1):], ["--add-dir", *dirs])
+        self.assertNotIn("--allowedTools", seen["cmd"])
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.run_auditor("codex", "p", zaebal.load_config(), dirs=dirs)
+        self.assertNotIn("--add-dir", seen["cmd"])
+        self.assertEqual(seen["cmd"][-1], "-")
+
     def test_argv_auditors_still_receive_the_prompt_as_an_argument(self):
         seen = {}
 
@@ -1382,6 +1405,40 @@ class TestAuditor(TempState):
         self.assertIsNone(verdict)
         self.assertIn("malformed verdict", error)
         self.assertIn("missing sections", error)
+
+    def test_verdict_headings_accept_hashes_and_numbers_in_any_order(self):
+        # Shapes observed from live claude -p runs; each must parse as a section.
+        shapes = [
+            "## {n}. {label}\n\nbody {label}\n",
+            "{n}. ## {label}\nbody {label}\n",
+            "### {label}\nbody {label}\n",
+            "**{n}. {label}**\nbody {label}\n",
+            "**{label}:** body {label}\n",
+            "{n}) {label} – body {label}\n",
+        ]
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                verdict = "\n".join(
+                    shape.format(n=i + 1, label=label)
+                    for i, label in enumerate(zaebal.AUDIT_SECTION_LABELS)
+                ).replace("body STATUS", "UNVERIFIED body")
+                self.assertIsNone(zaebal.validate_auditor_verdict(verdict))
+
+    def test_restated_label_inside_its_section_is_content_not_an_empty_section(self):
+        verdict = VALID_AUDIT_VERDICT.replace(
+            "5. DISCRIMINATING CHECK — inspect the active artifact.",
+            "## 5. DISCRIMINATING CHECK\nDISCRIMINATING CHECK: inspect the active artifact.",
+        )
+        self.assertIsNone(zaebal.validate_auditor_verdict(verdict))
+
+    def test_status_word_may_be_decorated_but_must_be_unique(self):
+        for status in ("**UNVERIFIED**", "Статус: **PARTIAL** (см. выше)", "`CONFIRMED`",
+                       "DISPROVED — commit abc shows otherwise"):
+            verdict = VALID_AUDIT_VERDICT.replace("8. STATUS — UNVERIFIED.", f"## 8. STATUS\n\n{status}")
+            self.assertIsNone(zaebal.validate_auditor_verdict(verdict), status)
+        for status in ("CONFIRMED or DISPROVED, unclear", "unknown", ""):
+            verdict = VALID_AUDIT_VERDICT.replace("8. STATUS — UNVERIFIED.", f"## 8. STATUS\n{status}\nmore")
+            self.assertIsNotNone(zaebal.validate_auditor_verdict(verdict), status)
 
     def test_empty_auditor_sections_are_rejected(self):
         verdict = "\n".join([

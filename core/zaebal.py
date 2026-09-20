@@ -92,6 +92,13 @@ def _model_args(auditor, model):
 
 
 AUDITOR_MODEL_FLAG = {"claude": "--model", "codex": "--model", "opencode": "--model"}
+# Headless claude -p auto-approves Read only inside its working directories;
+# host transcripts (~/.claude/projects/...) and our snapshots (~/.zaebal/...)
+# live elsewhere, so without --add-dir the auditor stops at a permission
+# prompt nobody can answer (verified live 2026-09-20). --allowedTools would
+# grant permission but leave every other tool available; --add-dir widens
+# only the readable area. Codex's read-only sandbox needs nothing extra.
+AUDITOR_DIR_FLAG = {"claude": "--add-dir"}
 AUDITOR_PROMPT_VIA = {"claude": "stdin", "codex": "stdin", "kimi": "argv", "opencode": "argv"}
 AUDITOR_CMDS = {
     "kimi": lambda prompt, model=None: ["kimi", "-p", prompt],
@@ -1376,12 +1383,21 @@ def validate_auditor_verdict(verdict):
     labels = "|".join(
         re.escape(label) for label in sorted(AUDIT_SECTION_LABELS, key=len, reverse=True)
     )
+    # Models emit every mix of "## 2. LABEL", "2. ## LABEL", "**LABEL:**",
+    # "### LABEL" and "**5. LABEL**"; a rejected verdict is a wasted 40-second
+    # audit, so accept hashes and numbers in either order (verified live).
     heading = re.compile(
-        r"^\s*(?:\d+[.)]\s*)?(?:#{1,6}\s*)?(?:\*\*)?"
-        rf"(?P<label>{labels})(?:\*\*)?\s*(?:(?::|—|-)\s*|(?=\n|$))",
+        r"^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:\d+[.)]\s*)?"
+        rf"(?P<label>{labels})\s*(?:\*\*)?\s*(?:(?::|—|-|–)\s*(?:\*\*)?\s*|(?=\n|$))",
         re.I | re.M,
     )
-    matches = list(heading.finditer(verdict))
+    # A restated label inside its own section ("## 5. DISCRIMINATING CHECK" then
+    # "DISCRIMINATING CHECK: run X") is content, not a new empty section.
+    matches = []
+    for match in heading.finditer(verdict):
+        if matches and matches[-1].group("label").upper() == match.group("label").upper():
+            continue
+        matches.append(match)
     sections = {}
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(verdict)
@@ -1392,10 +1408,13 @@ def validate_auditor_verdict(verdict):
     empty = [label for label in AUDIT_SECTION_LABELS if not sections[label]]
     if empty:
         return "empty sections: " + ", ".join(empty)
-    if not re.match(
-        r"^(CONFIRMED|PARTIAL|UNVERIFIED|DISPROVED)\b",
-        sections["STATUS"], re.I,
-    ):
+    # The verdict word may be bolded, quoted, or prefixed ("Статус: **UNVERIFIED**");
+    # require exactly one of the four verdicts on the first non-empty line.
+    first_line = next((line for line in sections["STATUS"].splitlines() if line.strip()), "")
+    verdicts = set(m.upper() for m in re.findall(
+        r"\b(CONFIRMED|PARTIAL|UNVERIFIED|DISPROVED)\b", first_line, re.I,
+    ))
+    if len(verdicts) != 1:
         return "STATUS must be CONFIRMED, PARTIAL, UNVERIFIED, or DISPROVED"
     return None
 
@@ -1425,7 +1444,22 @@ def fit_argv_prompt(prompt):
     return prompt[:head] + marker + prompt[-tail:]
 
 
-def run_auditor(auditor, prompt, cfg):
+def evidence_dirs(payload):
+    """Directories the auditor must be able to read: project, transcript, snapshot."""
+    dirs = []
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd and Path(cwd).is_dir():
+        dirs.append(str(Path(cwd)))
+    for key in ("transcript_path", "transcript_snapshot_path"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            parent = str(Path(value).expanduser().parent)
+            if parent not in dirs:
+                dirs.append(parent)
+    return dirs
+
+
+def run_auditor(auditor, prompt, cfg, dirs=()):
     """Run the external auditor CLI. Returns (verdict, error). Exactly one is set."""
     custom = cfg.get("auditor_command", "")
     if isinstance(custom, list) or str(custom).strip():
@@ -1447,6 +1481,9 @@ def run_auditor(auditor, prompt, cfg):
         via = AUDITOR_PROMPT_VIA.get(auditor, "argv")
         cmd = builder(fit_argv_prompt(prompt) if via == "argv" else "",
                       cfg.get("auditor_model") or None)
+        dir_flag = AUDITOR_DIR_FLAG.get(auditor)
+        if dir_flag and dirs:
+            cmd = list(cmd) + [dir_flag, *dirs]
     try:
         r = subprocess.run(
             cmd,
@@ -1672,7 +1709,8 @@ def mode_prompt(host, payload):
         if auditor:
             auditor_invoked = auditor_will_invoke(auditor, cfg)
             verdict, error = run_auditor(
-                auditor, build_audit_prompt(payload, level, cfg, host=host), cfg
+                auditor, build_audit_prompt(payload, level, cfg, host=host), cfg,
+                dirs=evidence_dirs(payload),
             )
             if verdict:
                 verdict_received = True

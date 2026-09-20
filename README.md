@@ -76,22 +76,30 @@ possible on all four adapters, but with different guarantees:
 | Kimi CLI | [`PreToolUse`](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html) blocks with exit `2` or structured `deny`. | **Yes, fail-open.** A hook error, crash, or timeout allows the operation. |
 | OpenCode | [`tool.execute.before`](https://opencode.ai/docs/plugins/) can reject a tool call; [`permission`](https://opencode.ai/docs/permissions/) can deny edit and shell actions. | **Yes.** A durable lock should combine protocol state with host permissions instead of relying only on a plugin exception. |
 
-No lock or state machine is added yet. The text fixes and incident telemetry should first
-show whether a discipline-based STOP remains insufficient.
+Claude Code now ships the lock: `install.sh` registers `zaebal.py --guard` on
+`PreToolUse`, and while the session's streak is at level 3 without acknowledgment the hook
+returns a structured `deny` for `Edit`, `Write`, `MultiEdit`, `NotebookEdit`,
+`SendMessage`, shell commands outside a conservative read-only allowlist, and MCP tools
+whose names do not read as read-only. `Read`/`Grep`/`Glob`, `Agent`/`Task` for the two
+auditors, and the injected `--dismiss-trigger` / `--control` commands pass. The same
+acknowledgment or dismissal that resets the streak lifts the lock; `mutation_lock: false`
+disables it; any hook error is fail-open. Denials are journaled as tool names only and
+counted in `zaebal report`. On the other hosts the STOP remains discipline-based.
 
 ## Capability map
 
 | Capability | What it does | Implementation |
 |---|---|---|
 | Multilingual detection | Detects Russian, English, and Chinese profanity, including punctuation-separated and common leetspeak forms. | `core/wordlists/{ru,en,zh}.txt` + NFKC normalization |
-| Intent classification | Separates praise, directed complaints, and ambiguous frustration before changing the streak. | `classify()`; weights `0`, `1.0`, and `0.5` |
+| Intent classification | Separates praise, directed complaints, ambiguous frustration, and calm second-person complaints without profanity before changing the streak; questions never count. | `classify()`; weights `0`, `1.0`, `0.5`, `0.5`; `calm_complaints` switch |
 | Session escalation | Tracks each session in a 30-minute sliding window and selects L1, L2, or L3. | Atomic JSON state + native `fcntl` / `msvcrt` lock |
-| Three audit protocols | Injects increasingly strict instructions: independent checks, assumption inventory, and full stop. | `core/protocol/L1.md` → `L3.md` |
-| Session-first evidence | Requires the working agent and two internal auditors to read the chronology, locate the first divergence, and correlate it with diffs and timestamped commits. | Locator first; inline excerpt only when no source file is available |
-| External auditor | Runs the same or a cross-vendor CLI against the session source, an orientation excerpt, and repository evidence. | Claude, Codex, Kimi, or OpenCode |
+| Three audit protocols plus a light first signal | Injects increasingly strict instructions: independent checks, assumption inventory, and full stop. A streak below weight 1 gets a one-pass short protocol without sub-agents. | `core/protocol/L1-light.md`, `L1.md` → `L3.md`; `light_first_signal` |
+| Session-first evidence | Requires the working agent and two internal auditors to read the chronology, locate the first divergence, and correlate it with diffs and timestamped commits. The original request is quoted verbatim, and a private rendered snapshot of the transcript is written for auditors. | Locator first with `original_request`; `~/.zaebal/transcripts/<host>/` snapshot; inline excerpt only when no source file is available |
+| External auditor | Runs the same or a cross-vendor CLI against the session source, an orientation excerpt, and repository evidence. Claude and Codex receive the prompt on stdin, never in `ps`; a different model can be selected. | Claude, Codex, Kimi, or OpenCode; `auditor_model`, `auditor_prompt_via` |
+| Level-3 mutation lock (Claude Code) | While a session is at level 3 and unacknowledged, a `PreToolUse` guard denies `Edit`/`Write`, mutating shell commands, and MCP writes with a structured decision. Read-only tools, the auditor sub-agents, and the protocol's own dismiss/control commands pass. | `zaebal.py --guard`; `hookSpecificOutput.permissionDecision=deny`; `mutation_lock` switch |
 | Four host adapters | Hooks Claude Code, Codex CLI, Kimi CLI, and OpenCode at user-message submission. | JSON hooks, TOML hook, or TypeScript plugin |
 | Explicit continuation | Resets the emotional streak after acknowledgment such as `continue`, `продолжай`, or `по плану`; does not certify resolution. | Existing per-session state |
-| Metadata telemetry | Appends trigger, auditor, verdict, and acknowledgment events without message contents. | `~/.zaebal/incidents.jsonl` |
+| Metadata telemetry and report | Appends trigger, auditor, verdict, guard-denial, and acknowledgment events without message contents; an acknowledgment records how many triggers it closed and how long the loop lasted. `zaebal report` aggregates false-trigger rate, time-to-ack, triggers per loop, and auditor verdict rate. | `~/.zaebal/incidents.jsonl`; `build_report()` |
 | Fail-open safety | Errors do not block the host session. Trigger/state and telemetry write failures are visible; no rollback token is issued for an unsaved trigger. | Exit `0`; detected persistence/auditor errors become context |
 
 ## How it works
@@ -125,12 +133,14 @@ normalize → detect → classify
 
 | Level | Streak weight | Agent behavior | External auditor |
 |---|---:|---|---|
-| **L1** | `0.5–1.5` | Read session history, locate the first divergence, run two independent internal audits, and prepare a micro-plan. | Optional |
+| **L1 light** | `< 1` | One pass, no sub-agents: reread the original request, name the added assumption, one discriminating check, five-line report. The full protocol follows on repetition; a directed complaint is never light. | Never |
+| **L1** | `1–1.5` | Read session history, locate the first divergence, run two independent internal audits, and prepare a micro-plan. | Optional |
 | **L2** | `2–3.5` | Re-read the chronology, run two fresh internal audits, audit the previous conclusion, and compare against the original request. | Disabled by default |
 | **L3** | `4+` | Stop all non-audit work; run two internal audits plus the configured external audit, correlate the accusation streak with Git history, and wait for acknowledgment. | Attempted by default; unsafe built-ins are refused |
 
-Directed complaints add `1.0`; profanity without a detected addressee adds `0.5`.
-The window is 30 minutes. Calm questions and praise do not reset it. Only an explicit
+Directed complaints add `1.0`; profanity without a detected addressee adds `0.5`, and so
+does a calm second-person complaint without profanity ("ты опять сломал сборку", "you
+ignored what I asked"); a question never counts. The window is 30 minutes. Calm questions and praise do not reset it. Only an explicit
 continuation-bearing acknowledgment does.
 
 ## Install
@@ -168,7 +178,7 @@ the relevant user configuration:
 
 | Host | Integration | Default auditor command |
 |---|---|---|
-| Claude Code | `UserPromptSubmit` in `~/.claude/settings.json` | `claude -p` with `Read,Grep,Glob` only |
+| Claude Code | `UserPromptSubmit` + `PreToolUse` guard in `~/.claude/settings.json` | `claude -p` with `Read,Grep,Glob` only |
 | Codex CLI | `UserPromptSubmit` in `~/.codex/hooks.json` | `codex exec --sandbox read-only` |
 | Kimi CLI | hook block in `$KIMI_CODE_HOME/config.toml` when set, otherwise `~/.kimi-code/config.toml` | `kimi -p` (unsafe opt-in) |
 | OpenCode | plugin in `~/.config/opencode/plugins/zaebal.ts` | `opencode run` (unsafe opt-in) |
@@ -220,6 +230,7 @@ shared core on Claude Code, Codex, Kimi CLI, and OpenCode:
 | `zaebal manual off` / `zaebal manual on` | Disable / enable explicitly requested audits |
 | `zaebal off` / `zaebal on` | Disable / enable both entry points |
 | `zaebal audit` | Run one manual audit, without increasing the profanity streak |
+| `zaebal report` | Aggregate the incident journal: triggers by kind and level, false-trigger rate, time-to-ack, triggers per loop, guard denials, auditor verdict rate |
 
 Settings remain accessible when both switches are off. Bare Russian `заебал` still
 counts as a possible complaint; use Latin `zaebal` for management.
@@ -244,8 +255,15 @@ Defaults live in [`core/config.json`](core/config.json). User overrides live in
   "auditor_timeout_sec": 90,
   "auditor_command": "",
   "allow_unsafe_auditor": false,
+  "auditor_model": "",
+  "auditor_prompt_via": "argv",
+  "mutation_lock": true,
+  "light_first_signal": true,
+  "calm_complaints": true,
   "transcript_tail_chars": 12000,
-  "agent_context_tail_chars": 2500
+  "agent_context_tail_chars": 2500,
+  "transcript_snapshot_chars": 200000,
+  "original_request_chars": 600
 }
 ```
 
@@ -256,10 +274,17 @@ Defaults live in [`core/config.json`](core/config.json). User overrides live in
 | `auditor` | `"same"` | Same vendor as the host, a specific `kimi` / `claude` / `codex` / `opencode`, or `"none"`. Built-in Kimi/OpenCode auditing degrades visibly unless unsafe mode is explicitly enabled. |
 | `audit_levels` | `[3]` | Levels that synchronously invoke an external auditor. Use `[2, 3]` for earlier audits. |
 | `auditor_timeout_sec` | `90` | Maximum time to wait for the auditor response. |
-| `auditor_command` | `""` | Custom command; the audit prompt is appended as the final argument. |
+| `auditor_command` | `""` | Custom command; the audit prompt is appended as the final argument unless `auditor_prompt_via` is `stdin`. |
+| `auditor_model` | `""` | Model passed as `--model` to the `claude` / `codex` / `opencode` auditor, so the auditor can differ from the working agent without changing vendor. Empty keeps the CLI default. |
+| `auditor_prompt_via` | `"argv"` | Custom `auditor_command` only: `stdin` pipes the prompt instead of appending it. Built-in Claude/Codex auditors always use stdin; argv delivery is clipped to the Windows command-line limit. |
+| `mutation_lock` | `true` | Whether the `--guard` PreToolUse hook denies mutating tools during a level-3 stop. Requires the guard hook to be registered (Claude Code). |
+| `light_first_signal` | `true` | A streak below weight 1 receives the short `L1-light.md` protocol without sub-agents or external audit. |
+| `calm_complaints` | `true` | A second-person complaint without profanity starts a half-weight streak. |
 | `allow_unsafe_auditor` | `false` | Opt in to built-in Kimi/OpenCode auditors even though those CLIs provide no enforced read-only mode. Prefer Claude/Codex or a sandboxed `auditor_command`. |
 | `transcript_tail_chars` | `12000` | Maximum orientation excerpt sent to the auditor; a readable transcript path remains the authoritative history. |
 | `agent_context_tail_chars` | `2500` | Maximum inline excerpt when no readable transcript exists. Otherwise the locator is injected first and agents read the source directly. |
+| `transcript_snapshot_chars` | `200000` | Size of the rendered text snapshot (original request + chronological user/assistant text) written to `~/.zaebal/transcripts/<host>/` on every real trigger and exposed as `transcript_snapshot`. `0` disables it. |
+| `original_request_chars` | `600` | How much of the first user message is quoted in the locator and audit prompt. |
 
 Example: use Claude to audit a Codex session:
 
@@ -276,7 +301,7 @@ zaebal/
 ├── core/
 │   ├── zaebal.py          # detection, state, escalation, transcript and auditor
 │   ├── config.json        # default runtime configuration
-│   ├── protocol/          # L1.md, L2.md, L3.md
+│   ├── protocol/          # L1-light.md, L1.md, L2.md, L3.md
 │   └── wordlists/         # ru.txt, en.txt, zh.txt
 ├── adapters/
 │   ├── claude-code/       # JSON hook example
@@ -301,7 +326,7 @@ Runtime state is stored under `~/.zaebal/`:
 ├── config.json    # optional user overrides
 ├── state.json     # per-session weighted trigger history
 ├── incidents.jsonl # metadata-only trigger and acknowledgment events
-├── transcripts/opencode/ # private text snapshots used as OpenCode audit context
+├── transcripts/<host>/ # private (0600) rendered snapshots: original request + chronology
 └── state.lock     # native lock for concurrent hooks
 ```
 
@@ -324,8 +349,12 @@ end-to-end protocol injection.
 
 - Detection is heuristic. Sarcasm and unusual context can still produce false positives
   or false negatives.
-- The detector does not identify non-profane action loops; adding a general loop detector
-  would be a separate product with its own false-positive model.
+- Calm second-person complaints are detected, but a loop the user never comments on is
+  not; adding a general action-loop detector would be a separate product with its own
+  false-positive model.
+- The mutation lock exists for Claude Code only. It is a guardrail, not a sandbox: an
+  unknown tool is allowed, the shell allowlist is conservative and may deny a harmless
+  command, and the lock expires with the 30-minute streak window.
 - Native Windows host integration is currently verified for Codex only; other hosts
   require their own adapter validation. State locking uses native `fcntl` / `msvcrt`.
 - Built-in Kimi and OpenCode auditors have no enforced read-only mode and are refused by
