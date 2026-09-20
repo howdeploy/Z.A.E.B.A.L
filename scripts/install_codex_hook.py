@@ -109,7 +109,9 @@ def main():
     parser.add_argument("--remove", action="store_true",
                         help="unregister only this hook; preserve runtime and user data")
     args = parser.parse_args()
-    actual = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else None
+    # The "linux" instruction is the POSIX path: macOS and the BSDs share the
+    # same hook shape, interpreter launch and fcntl locking, so they take it too.
+    actual = "windows" if os.name == "nt" else "linux" if os.name == "posix" else None
     if args.platform != actual:
         parser.error("selected instruction does not match this Python runtime OS")
     result = install(args.config.expanduser().resolve(), args.dest.expanduser().resolve(), args.remove)

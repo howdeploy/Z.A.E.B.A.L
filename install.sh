@@ -48,6 +48,16 @@ groups.append({
         "timeout": 180,
     }]
 })
+if host == "claude":
+    # Level-3 mutation lock: structured PreToolUse deny while the streak is
+    # at level 3 and unacknowledged. Fail-open; disable with mutation_lock=false.
+    hooks.setdefault("PreToolUse", []).append({
+        "hooks": [{
+            "type": "command",
+            "command": f"python3 ~/.zaebal/core/zaebal.py --host {host} --guard",
+            "timeout": 10,
+        }]
+    })
 
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PYEOF

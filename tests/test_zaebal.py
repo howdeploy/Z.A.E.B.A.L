@@ -247,6 +247,30 @@ class TestClassify(unittest.TestCase):
             "directed",
         )
 
+    def test_calm_complaint_addressed_to_the_agent_is_a_half_weight_trigger(self):
+        for text in (
+            "ты опять сломал сборку",
+            "ты не то сделал, я просил только экспорт",
+            "you ignored what I asked and changed the schema",
+            "это снова не работает, ты не читаешь мои сообщения",
+        ):
+            self.assertEqual(self.kind(text), "complaint", text)
+        self.assertEqual(zaebal.weight_for("complaint"), 0.5)
+
+    def test_questions_praise_and_unaddressed_complaints_stay_clean(self):
+        for text in (
+            "ты можешь проверить, почему опять не работает?",
+            "опять не работает",                      # no addressee
+            "спасибо, теперь работает",
+            "проверь, не сломал ли я сборку",          # first person
+            "изучи репо и скилл https://github.com/example/zaebal",
+        ):
+            self.assertNotEqual(self.kind(text), "complaint", text)
+            self.assertNotEqual(self.kind(text), "directed", text)
+
+    def test_profanity_still_outranks_the_calm_class(self):
+        self.assertEqual(self.kind("ты опять сломал, заебал"), "directed")
+
     def test_directed_regression(self):
         self.assertEqual(self.kind("ты меня заебал"), "directed")
 
@@ -376,7 +400,7 @@ class TestAcknowledge(TempState):
         self.assertEqual(zaebal.STATE_FILE.read_text(), before)
 
     def test_ack_persistence_failure_is_visible_to_agent(self):
-        with mock.patch.object(zaebal, "acknowledge", return_value=None):
+        with mock.patch.object(zaebal, "acknowledge_details", return_value=(None, None)):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 zaebal.mode_prompt("codex", {
@@ -430,6 +454,127 @@ class TestTelemetry(TempState):
         )
         self.assertEqual(event["session_id"], "session-1")
         self.assertNotIn("prompt", raw)
+
+
+class TestGuard(TempState):
+    def test_shell_read_only_classifier(self):
+        for command in (
+            "git status", "git --no-pager log -5 --oneline", "git diff --cached | head -50",
+            "ls -la && cat README.md", "grep -rn foo src/ | wc -l", "python3 -c 'print(1)'",
+            "sed -n 10,20p core/zaebal.py", "curl -sI https://example.org", "",
+            "env ZAEBAL_STATE_DIR=/x /usr/bin/python3 -X utf8 /y/zaebal.py --dismiss-trigger=abc",
+            "python3 ~/.zaebal/core/zaebal.py --control status",
+        ):
+            self.assertTrue(zaebal.shell_is_read_only(command), command)
+        for command in (
+            "git commit -m x", "git stash", "git checkout -- .", "echo x > file",
+            "cat a | tee b", "sed -i 's/a/b/' f", "rm -rf build", "npm install",
+            "python3 setup.py install", "ls; touch marker", "git status && git push",
+            "find . -name '*.pyc' | xargs rm", "mkdir -p out", "docker compose up -d",
+        ):
+            self.assertFalse(zaebal.shell_is_read_only(command), command)
+
+    def test_tool_classifier(self):
+        self.assertFalse(zaebal.tool_is_mutating("Read", {"file_path": "x"}))
+        self.assertFalse(zaebal.tool_is_mutating("Agent", {"prompt": "audit"}))
+        self.assertFalse(zaebal.tool_is_mutating("Bash", {"command": "git status"}))
+        self.assertTrue(zaebal.tool_is_mutating("Edit", {"file_path": "x"}))
+        self.assertTrue(zaebal.tool_is_mutating("Write", {}))
+        self.assertTrue(zaebal.tool_is_mutating("Bash", {"command": "git commit -m x"}))
+        self.assertTrue(zaebal.tool_is_mutating("mcp__github__create_issue", {}))
+        self.assertFalse(zaebal.tool_is_mutating("mcp__github__list_issues", {}))
+        self.assertFalse(zaebal.tool_is_mutating("SomeFutureTool", {}))  # unknown: fail-open
+
+    def test_guard_is_silent_below_level_three(self):
+        zaebal.record_trigger("g", weight=1.0)
+        zaebal.record_trigger("g", weight=1.0)
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g", "tool_name": "Edit", "tool_input": {}}, zaebal.load_config()))
+
+    def test_guard_denies_mutations_at_level_three_until_acknowledged(self):
+        for _ in range(4):
+            zaebal.record_trigger("g3", weight=1.0)
+        cfg = zaebal.load_config()
+        deny = zaebal.guard_decision({"session_id": "g3", "tool_name": "Edit",
+                                      "tool_input": {"file_path": "a.py"}}, cfg)
+        self.assertIsNotNone(deny)
+        output = deny[0]["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PreToolUse")
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn("level-3 STOP", output["permissionDecisionReason"])
+        self.assertIn("продолжай", output["permissionDecisionReason"])
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g3", "tool_name": "Read", "tool_input": {}}, cfg))
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g3", "tool_name": "Bash", "tool_input": {"command": "git diff"}}, cfg))
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "other", "tool_name": "Edit", "tool_input": {}}, cfg))
+        zaebal.acknowledge("g3")
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g3", "tool_name": "Edit", "tool_input": {}}, cfg))
+
+    def test_guard_respects_the_mutation_lock_switch_and_dismissal(self):
+        _, _, token = zaebal.record_trigger("g4", weight=4.0, return_token=True)
+        payload = {"session_id": "g4", "tool_name": "Write", "tool_input": {}}
+        self.assertIsNotNone(zaebal.guard_decision(payload, zaebal.load_config()))
+        self.assertIsNone(zaebal.guard_decision(payload, {**zaebal.load_config(), "mutation_lock": False}))
+        zaebal.dismiss_trigger(token)
+        self.assertIsNone(zaebal.guard_decision(payload, zaebal.load_config()))
+
+
+class TestReport(TempState):
+    def test_ack_journals_the_closed_streak_as_metadata(self):
+        zaebal.record_trigger("s", now=1000.0, weight=1.0)
+        zaebal.record_trigger("s", now=1100.0, weight=1.0)
+        status, resolution = zaebal.acknowledge_details("s", now=1160.0)
+        self.assertTrue(status)
+        self.assertEqual(resolution["triggers_cleared"], 2)
+        self.assertEqual(resolution["peak_level"], 2)
+        self.assertEqual(resolution["seconds_since_first_trigger"], 160.0)
+        self.assertEqual(resolution["seconds_since_last_trigger"], 60.0)
+        zaebal.record_incident("s", 0, "ack", 0.0, ack=True, resolution=resolution, now=1160.0)
+        event = json.loads(zaebal.INCIDENTS_FILE.read_text().splitlines()[-1])
+        self.assertEqual(event["resolution"]["triggers_cleared"], 2)
+        self.assertNotIn("prompt", json.dumps(event))
+
+    def test_report_aggregates_false_positive_rate_and_loop_duration(self):
+        events = [
+            {"ts": 1.0, "session_id": "a", "kind": "directed", "level": 1, "auditor_invoked": False},
+            {"ts": 2.0, "session_id": "a", "kind": "ambiguous", "level": 1},
+            {"ts": 3.0, "session_id": "a", "kind": "false_trigger", "level": 0},
+            {"ts": 4.0, "session_id": "a", "kind": "directed", "level": 2},
+            {"ts": 5.0, "session_id": "a", "kind": "ack", "ack": True,
+             "resolution": {"triggers_cleared": 2, "peak_level": 2,
+                            "seconds_since_first_trigger": 240.0}},
+            {"ts": 6.0, "session_id": "b", "kind": "directed", "level": 3,
+             "auditor_invoked": True, "verdict_received": True},
+            {"ts": 7.0, "session_id": "b", "kind": "directed", "level": 3,
+             "auditor_invoked": True, "verdict_received": False},
+            {"ts": 8.0, "session_id": "b", "kind": "ack", "ack": True,
+             "resolution": {"triggers_cleared": 2, "peak_level": 3,
+                            "seconds_since_first_trigger": 60.0}},
+            {"ts": 9.0, "session_id": "c", "kind": "manual", "level": 1},
+        ]
+        report = zaebal.build_report(events)
+        self.assertEqual(report["triggers"]["total"], 6)
+        self.assertEqual(report["triggers"]["by_kind"], {"directed": 4, "ambiguous": 1, "manual": 1})
+        self.assertEqual(report["triggers"]["by_level"], {"1": 3, "2": 1, "3": 2})
+        self.assertEqual(report["false_triggers"], {"retracted": 1, "rate_of_automatic": 0.2})
+        self.assertEqual(report["sessions_with_triggers"], 3)
+        self.assertEqual(report["resolutions"]["with_cleared_streak"], 2)
+        self.assertEqual(report["resolutions"]["median_seconds_first_trigger_to_ack"], 150.0)
+        self.assertEqual(report["resolutions"]["median_triggers_per_resolved_streak"], 2)
+        self.assertEqual(report["resolutions"]["peak_level_counts"], {"1": 0, "2": 1, "3": 1})
+        self.assertEqual(report["external_auditor"], {"invoked": 2, "verdicts": 1, "verdict_rate": 0.5})
+
+    def test_empty_journal_reports_zero_not_crash(self):
+        report = zaebal.build_report(zaebal.load_incidents())
+        self.assertEqual(report["events"], 0)
+        self.assertIsNone(report["false_triggers"]["rate_of_automatic"])
+
+    def test_bad_journal_lines_are_skipped(self):
+        zaebal.INCIDENTS_FILE.write_text('{"kind":"directed","ts":1}\nnot json\n[1,2]\n')
+        self.assertEqual(len(zaebal.load_incidents()), 1)
 
 
 class TestConfig(TempState):
@@ -572,6 +717,11 @@ assert.equal(config.manual_trigger, false);
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(user_config.read_text()), saved_config)
+            claude_hooks = json.loads((portable_home / ".claude/settings.json").read_text())["hooks"]
+            guard = [h["command"] for g in claude_hooks.get("PreToolUse", []) for h in g["hooks"]]
+            self.assertEqual(guard, ["python3 ~/.zaebal/core/zaebal.py --host claude --guard"])
+            codex_hooks = json.loads((portable_home / ".codex/hooks.json").read_text())["hooks"]
+            self.assertNotIn("PreToolUse", codex_hooks)
             installed = [
                 portable_home / ".zaebal/core/zaebal.py",
                 portable_home / ".agents/skills/zaebal/SKILL.md",
@@ -883,6 +1033,67 @@ class TestTranscriptTail(unittest.TestCase):
         self.assertIn("[t1 user]", tail)
 
 
+class TestTranscriptHeadAndSnapshot(TempState):
+    def _claude_jsonl(self):
+        records = [
+            {"type": "summary", "summary": "irrelevant index record"},
+            {"type": "user", "timestamp": "2026-09-20T10:00:00Z",
+             "message": {"role": "user", "content": "сделай экспорт в CSV, без изменения схемы"}},
+            {"type": "assistant", "timestamp": "2026-09-20T10:00:05Z",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "меняю схему"}]}},
+            {"type": "user", "timestamp": "2026-09-20T10:01:00Z",
+             "message": {"role": "user", "content": "ты меня заебал"}},
+        ]
+        path = Path(self.tmp.name) / "session.jsonl"
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
+        return path
+
+    def test_head_is_the_first_user_message_not_the_trigger(self):
+        head = zaebal.transcript_head(self._claude_jsonl(), 600)
+        self.assertIn("сделай экспорт в CSV", head)
+        self.assertNotIn("заебал", head)
+        self.assertTrue(head.startswith("[2026-09-20T10:00:00Z user]"))
+
+    def test_inline_head_uses_first_user_record(self):
+        payload = {"session_history": [
+            {"role": "assistant", "content": "привет"},
+            {"role": "user", "content": "почини тест"},
+            {"role": "user", "content": "ты заебал"},
+        ]}
+        self.assertIn("почини тест", zaebal.inline_transcript_head(payload, 600))
+
+    def test_snapshot_is_private_readable_and_carries_both_ends(self):
+        cfg = zaebal.load_config()
+        snap = zaebal.write_transcript_snapshot(self._claude_jsonl(), "claude", "abc/../x y", cfg)
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.parent, zaebal.STATE_DIR / "transcripts" / "claude")
+        self.assertNotIn("/", snap.name.replace(".txt", "")); self.assertNotIn("..", snap.name)
+        if os.name != "nt":
+            self.assertEqual(snap.stat().st_mode & 0o777, 0o600)
+        body = snap.read_text(encoding="utf-8")
+        self.assertIn("## ORIGINAL REQUEST", body)
+        self.assertIn("сделай экспорт в CSV", body)
+        self.assertIn("## CHRONOLOGY", body)
+        self.assertIn("ты меня заебал", body)
+
+    def test_snapshot_is_skipped_when_disabled_or_already_a_snapshot(self):
+        cfg = {**zaebal.load_config(), "transcript_snapshot_chars": 0}
+        self.assertIsNone(zaebal.write_transcript_snapshot(self._claude_jsonl(), "claude", "s", cfg))
+        own = zaebal.STATE_DIR / "transcripts" / "opencode" / "s.txt"
+        own.parent.mkdir(parents=True)
+        own.write_text(json.dumps({"role": "user", "content": "x"}) + "\n")
+        self.assertIsNone(zaebal.write_transcript_snapshot(own, "opencode", "s", zaebal.load_config()))
+
+    def test_audit_prompt_and_locator_quote_the_original_request(self):
+        path = self._claude_jsonl()
+        payload = {"cwd": "/nonexistent", "prompt": "ты меня заебал", "transcript_path": str(path)}
+        prompt = zaebal.build_audit_prompt(payload, 1, zaebal.load_config(), host="claude")
+        self.assertIn("## The original request", prompt)
+        self.assertIn("сделай экспорт в CSV", prompt.split("## The user prompt")[0])
+        block = zaebal.build_agent_context_block(payload, zaebal.load_config(), "claude")
+        self.assertIn("original_request: [2026-09-20T10:00:00Z user] сделай экспорт в CSV", block)
+
+
 class TestAuditor(TempState):
     def test_resolve_same_vendor(self):
         cfg = zaebal.load_config()
@@ -1014,15 +1225,30 @@ class TestAuditor(TempState):
             self.assertIn("git log with commit timestamps", summary)
             self.assertIn("initial", summary)
 
+    def test_git_summary_never_waits_on_pager_locks_or_prompts(self):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["env"] = kwargs.get("env") or {}
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.git_summary(str(PROJECT_DIR))
+        self.assertIn("--no-pager", seen["argv"])
+        self.assertEqual(seen["env"]["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(seen["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(seen["env"]["GIT_PAGER"], "cat")
+
     def test_run_auditor_missing_cli(self):
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
-        with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p: ["definitely-not-a-real-cli-xyz", p]}):
+        with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p, m=None: ["definitely-not-a-real-cli-xyz", p]}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", cfg)
         self.assertIsNone(verdict)
         self.assertIn("not found", error)
 
     def test_run_auditor_success(self):
-        fake = lambda p: [sys.executable, "-c", f"print({VALID_AUDIT_VERDICT!r})"]
+        fake = lambda p, m=None: [sys.executable, "-c", f"print({VALID_AUDIT_VERDICT!r})"]
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": fake}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", cfg)
@@ -1055,6 +1281,88 @@ class TestAuditor(TempState):
         self.assertIn("--safe-mode", claude)
         self.assertIn("--tools", claude)
         self.assertNotIn("--allowedTools", claude)
+
+    def test_stdin_auditors_never_place_the_prompt_in_argv(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"], seen["input"] = cmd, kwargs.get("input")
+            return subprocess.CompletedProcess(cmd, 0, stdout=VALID_AUDIT_VERDICT, stderr="")
+
+        for auditor in ("claude", "codex"):
+            with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+                verdict, error = zaebal.run_auditor(auditor, "ты меня заебал: секрет", zaebal.load_config())
+            self.assertEqual(verdict, VALID_AUDIT_VERDICT, error)
+            self.assertNotIn("ты меня заебал: секрет", " ".join(seen["cmd"]))
+            self.assertEqual(seen["input"], "ты меня заебал: секрет")
+        self.assertEqual(seen["cmd"][-1], "-")  # codex reads the prompt from stdin via "-"
+
+    def test_claude_auditor_gets_read_access_to_transcript_and_snapshot_dirs(self):
+        payload = {"transcript_path": "/h/.claude/projects/p/s.jsonl",
+                   "transcript_snapshot_path": "/h/.zaebal/transcripts/claude/s.txt",
+                   "cwd": str(PROJECT_DIR)}
+        dirs = zaebal.evidence_dirs(payload)
+        self.assertEqual(dirs, [str(PROJECT_DIR), "/h/.claude/projects/p",
+                                "/h/.zaebal/transcripts/claude"])
+        self.assertNotIn("/nonexistent", zaebal.evidence_dirs({"cwd": "/nonexistent"}))
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=VALID_AUDIT_VERDICT, stderr="")
+
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.run_auditor("claude", "p", zaebal.load_config(), dirs=dirs)
+        self.assertEqual(seen["cmd"][-(len(dirs) + 1):], ["--add-dir", *dirs])
+        self.assertNotIn("--allowedTools", seen["cmd"])
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.run_auditor("codex", "p", zaebal.load_config(), dirs=dirs)
+        self.assertNotIn("--add-dir", seen["cmd"])
+        self.assertEqual(seen["cmd"][-1], "-")
+
+    def test_argv_auditors_still_receive_the_prompt_as_an_argument(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"], seen["input"] = cmd, kwargs.get("input")
+            return subprocess.CompletedProcess(cmd, 0, stdout=VALID_AUDIT_VERDICT, stderr="")
+
+        cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.run_auditor("kimi", "prompt text", cfg)
+        self.assertEqual(seen["cmd"][-1], "prompt text")
+        self.assertIsNone(seen["input"])
+
+    def test_custom_command_can_opt_into_stdin_delivery(self):
+        script = "import sys; print(sys.stdin.read().upper())"
+        cfg = zaebal.validate_config({
+            "auditor_command": [sys.executable, "-c", script],
+            "auditor_prompt_via": "stdin",
+        })
+        verdict, error = zaebal.run_auditor("codex", VALID_AUDIT_VERDICT.lower(), cfg)
+        self.assertIsNone(error)
+        self.assertEqual(verdict, VALID_AUDIT_VERDICT.upper())
+
+    def test_auditor_model_is_passed_only_where_the_cli_supports_it(self):
+        self.assertIn("--model", zaebal.AUDITOR_CMDS["claude"]("", "claude-haiku-4-5"))
+        self.assertEqual(zaebal.AUDITOR_CMDS["codex"]("", "o4-mini")[-3:], ["--model", "o4-mini", "-"])
+        self.assertEqual(zaebal.AUDITOR_CMDS["opencode"]("p", "x/y")[-3:], ["--model", "x/y", "p"])
+        self.assertNotIn("--model", zaebal.AUDITOR_CMDS["claude"]("", None))
+        self.assertNotIn("--model", zaebal.AUDITOR_CMDS["kimi"]("p", "anything"))
+        cfg = zaebal.validate_config({"auditor_model": "claude-haiku-4-5"})
+        self.assertEqual(cfg["auditor_model"], "claude-haiku-4-5")
+        cfg = zaebal.validate_config({"auditor_model": "x; rm -rf /"})
+        self.assertEqual(cfg["auditor_model"], "")
+
+    def test_argv_prompt_is_clipped_only_under_a_platform_limit(self):
+        prompt = "H" * 1000 + "M" * 50000 + "T" * 1000
+        self.assertEqual(zaebal.fit_argv_prompt(prompt), prompt) if zaebal.argv_prompt_limit() is None else None
+        with mock.patch.object(zaebal, "argv_prompt_limit", return_value=zaebal.ARGV_PROMPT_LIMIT):
+            clipped = zaebal.fit_argv_prompt(prompt)
+        self.assertLessEqual(len(clipped), zaebal.ARGV_PROMPT_LIMIT)
+        self.assertTrue(clipped.startswith("H" * 1000))
+        self.assertTrue(clipped.endswith("T" * 1000))
+        self.assertIn("clipped", clipped)
 
     def test_unsandboxed_builtin_auditors_are_disabled_by_default(self):
         for auditor in ("kimi", "opencode"):
@@ -1090,13 +1398,47 @@ class TestAuditor(TempState):
         self.assertIn("exited with code 2", error)
 
     def test_exit_zero_malformed_auditor_output_is_not_a_verdict(self):
-        fake = lambda p: [sys.executable, "-c", "print('plausible cause')"]
+        fake = lambda p, m=None: [sys.executable, "-c", "print('plausible cause')"]
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": fake}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", cfg)
         self.assertIsNone(verdict)
         self.assertIn("malformed verdict", error)
         self.assertIn("missing sections", error)
+
+    def test_verdict_headings_accept_hashes_and_numbers_in_any_order(self):
+        # Shapes observed from live claude -p runs; each must parse as a section.
+        shapes = [
+            "## {n}. {label}\n\nbody {label}\n",
+            "{n}. ## {label}\nbody {label}\n",
+            "### {label}\nbody {label}\n",
+            "**{n}. {label}**\nbody {label}\n",
+            "**{label}:** body {label}\n",
+            "{n}) {label} – body {label}\n",
+        ]
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                verdict = "\n".join(
+                    shape.format(n=i + 1, label=label)
+                    for i, label in enumerate(zaebal.AUDIT_SECTION_LABELS)
+                ).replace("body STATUS", "UNVERIFIED body")
+                self.assertIsNone(zaebal.validate_auditor_verdict(verdict))
+
+    def test_restated_label_inside_its_section_is_content_not_an_empty_section(self):
+        verdict = VALID_AUDIT_VERDICT.replace(
+            "5. DISCRIMINATING CHECK — inspect the active artifact.",
+            "## 5. DISCRIMINATING CHECK\nDISCRIMINATING CHECK: inspect the active artifact.",
+        )
+        self.assertIsNone(zaebal.validate_auditor_verdict(verdict))
+
+    def test_status_word_may_be_decorated_but_must_be_unique(self):
+        for status in ("**UNVERIFIED**", "Статус: **PARTIAL** (см. выше)", "`CONFIRMED`",
+                       "DISPROVED — commit abc shows otherwise"):
+            verdict = VALID_AUDIT_VERDICT.replace("8. STATUS — UNVERIFIED.", f"## 8. STATUS\n\n{status}")
+            self.assertIsNone(zaebal.validate_auditor_verdict(verdict), status)
+        for status in ("CONFIRMED or DISPROVED, unclear", "unknown", ""):
+            verdict = VALID_AUDIT_VERDICT.replace("8. STATUS — UNVERIFIED.", f"## 8. STATUS\n{status}\nmore")
+            self.assertIsNotNone(zaebal.validate_auditor_verdict(verdict), status)
 
     def test_empty_auditor_sections_are_rejected(self):
         verdict = "\n".join([
@@ -1177,6 +1519,22 @@ class TestEndToEnd(TempState):
                 zaebal.STATE_FILE.unlink()
                 zaebal.INCIDENTS_FILE.unlink()
 
+    def test_report_command_in_chat_and_cli(self):
+        for i in range(2):
+            self._prompt("rep", f"ты заебал {i}")
+        self._prompt("rep", "продолжай")
+        out = self._prompt("rep", "zaebal report")
+        self.assertIn("<zaebal-control>", out)
+        self.assertIn("Incident report, not an audit trigger", out)
+        self.assertIn('"with_cleared_streak": 1', out)
+        self.assertIn('"peak_level_counts"', out)
+        cli = self.run_core({}, "--control", "report")
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        report = json.loads(cli.stdout)
+        self.assertEqual(report["triggers"]["total"], 2)
+        self.assertEqual(report["resolutions"]["median_triggers_per_resolved_streak"], 2)
+        self.assertFalse(Path(zaebal.STATE_DIR, "config.json").exists())
+
     def test_native_invocation_aliases_and_read_only_probe(self):
         for prefix in ("zaebal", "/zaebal", "$zaebal", "/skill:zaebal"):
             with self.subTest(prefix=prefix):
@@ -1250,6 +1608,21 @@ class TestEndToEnd(TempState):
         self.assertIn("<zaebal-session-context>", out)
         self.assertIn("DIVERGENCE POINT", out)
 
+    def test_claude_trigger_writes_snapshot_and_exposes_it_early(self):
+        transcript = Path(zaebal.STATE_DIR) / "raw.jsonl"
+        transcript.write_text(json.dumps({"type": "user", "message": {
+            "role": "user", "content": "первичный запрос: сделай миграцию"}}) + "\n")
+        r = self.run_core({"session_id": "snap-1", "prompt": "ты заебал",
+                           "transcript_path": str(transcript)}, "--host", "claude")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertIn(f"transcript_source: {transcript}", out[:512])
+        snapshot = Path(zaebal.STATE_DIR) / "transcripts" / "claude" / "snap-1.txt"
+        self.assertTrue(snapshot.exists())
+        self.assertIn(f"transcript_snapshot: {snapshot}", out[:1024])
+        self.assertIn("original_request: [user] первичный запрос: сделай миграцию", out)
+        self.assertIn("первичный запрос", snapshot.read_text(encoding="utf-8"))
+
     def test_locator_survives_a_bounded_hook_prefix(self):
         transcript = Path(self.tmp.name) / "history.jsonl"
         transcript.write_text(json.dumps({
@@ -1260,7 +1633,10 @@ class TestEndToEnd(TempState):
             "transcript_path": str(transcript),
         }).stdout
         self.assertIn(f"transcript_source: {transcript}", out[:512])
-        self.assertNotIn("LONG_HISTORY_MARKER", out)
+        # A file source means no inline excerpt: only the bounded original
+        # request is quoted, never the 19 000-character history itself.
+        self.assertNotIn("SESSION EXCERPT", out)
+        self.assertLessEqual(out.count("LONG_HISTORY_MARKER"), 600 // len("LONG_HISTORY_MARKER") + 1)
         self.assertIn("Completion gate", out)
 
     def test_missing_source_keeps_inline_evidence_and_marks_it_partial(self):
@@ -1361,12 +1737,98 @@ class TestEndToEnd(TempState):
         self.assertFalse(zaebal.STATE_FILE.exists())
         self.assertFalse(zaebal.INCIDENTS_FILE.exists())
 
+    def test_first_weak_signal_gets_light_protocol_then_full(self):
+        out = self._prompt("light", "бля, опять не то")
+        self.assertIn('<zaebal level="1" mode="light">', out)
+        self.assertIn("--dismiss-trigger=", out)
+        self.assertIn("original_request", out)
+        self.assertNotIn("Two independent", out)
+        self.assertNotIn("Launch two fresh internal auditors", out)
+        out = self._prompt("light", "бля, снова мимо")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertIn("Launch two fresh internal auditors", out)
+
+    def test_directed_first_signal_is_never_light(self):
+        out = self._prompt("full", "ты меня заебал")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertNotIn('mode="light"', out)
+
+    def test_light_mode_can_be_disabled(self):
+        self.set_config(light_first_signal=False)
+        out = self._prompt("nolight", "бля, опять не то")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertNotIn('mode="light"', out)
+
+    def test_light_mode_never_calls_the_external_auditor(self):
+        self.set_config(audit_levels=[1], auditor_command=(
+            f"{sys.executable} -c \"print({VALID_AUDIT_VERDICT!r})\""))
+        out = self._prompt("light-aud", "бля, опять не то")
+        self.assertIn('mode="light"', out)
+        self.assertNotIn("<zaebal-verdict", out)
+        out = self._prompt("light-aud", "бля, снова")
+        self.assertIn("<zaebal-verdict", out)
+
+    def test_calm_complaint_escalates_end_to_end_and_respects_switches(self):
+        out = self._prompt("calm", "ты опять сломал сборку")
+        self.assertIn('<zaebal level="1" mode="light">', out)
+        events = [json.loads(l) for l in zaebal.INCIDENTS_FILE.read_text().splitlines()]
+        self.assertEqual(events[-1]["kind"], "complaint")
+        self.assertEqual(events[-1]["weight"], 0.5)
+        out = self._prompt("calm", "ты снова не то сделал")
+        self.assertIn('<zaebal level="1">', out)
+        self.assertNotIn('mode="light"', out)
+        self.set_config(calm_complaints=False)
+        self.assertEqual(self._prompt("calm2", "ты опять сломал сборку"), "")
+        self.set_config(auto_trigger=False)
+        self.assertEqual(self._prompt("calm3", "ты опять сломал сборку"), "")
+
+    def test_guard_hook_end_to_end_with_journal(self):
+        self.set_config(auditor_command="no-such-cli-xyz")
+        for i in range(4):
+            self._prompt("gh", f"ты заебал {i}")
+        def guard(tool_name, tool_input):
+            r = self.run_core({"session_id": "gh", "tool_name": tool_name,
+                               "tool_input": tool_input, "hook_event_name": "PreToolUse"},
+                              "--host", "claude", "--guard")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout
+        denied = guard("Edit", {"file_path": "x", "new_string": "SECRET_INPUT"})
+        decision = json.loads(denied)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertEqual(guard("Read", {"file_path": "x"}), "")
+        self.assertEqual(guard("Bash", {"command": "git status"}), "")
+        self.assertIn("deny", guard("Bash", {"command": "git commit -am wip"}))
+        journal = zaebal.INCIDENTS_FILE.read_text()
+        events = [json.loads(l) for l in journal.splitlines()]
+        denials = [e for e in events if e["kind"] == "guard_deny"]
+        self.assertEqual([e["tool"] for e in denials], ["Edit", "Bash"])
+        self.assertNotIn("SECRET_INPUT", journal)
+        self.assertNotIn("wip", journal)
+        # the injected dismiss command itself must pass the guard
+        protocol = self._prompt("gh", "ты заебал ещё")
+        dismiss = next(line.strip().strip("`") for line in protocol.splitlines()
+                       if "--dismiss-trigger=" in line)
+        self.assertEqual(guard("Bash", {"command": dismiss}), "")
+        # acknowledgment lifts the lock
+        self._prompt("gh", "хорошо, продолжай")
+        self.assertEqual(guard("Edit", {"file_path": "x"}), "")
+        report = zaebal.build_report(zaebal.load_incidents())
+        self.assertEqual(report["mutation_lock"], {"denied_tool_calls": 2, "sessions_with_denials": 1})
+
+    def test_guard_fails_open_on_garbage(self):
+        r = self.run_core({}, "--guard")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        r = subprocess.run([sys.executable, str(CORE_DIR / "zaebal.py"), "--guard"],
+                           input="not json", capture_output=True, text=True,
+                           env=dict(os.environ, ZAEBAL_STATE_DIR=zaebal.STATE_DIR), timeout=20)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
     def test_praise_silences_core(self):
         self.assertEqual(self._prompt("tp", "заебись, работает!"), "")
         self.assertEqual(self._prompt("tp", "this is fucking great"), "")
 
     def test_ambiguous_builds_half_weight_streak(self):
-        self.assertIn('<zaebal level="1">', self._prompt("ta", "опять npm заебал"))
+        self.assertIn('<zaebal level="1" mode="light">', self._prompt("ta", "опять npm заебал"))
         self.assertIn('<zaebal level="1">', self._prompt("ta", "опять docker заебал"))
         self.assertIn('<zaebal level="1">', self._prompt("ta", "блядь, опять не то"))
         out = self._prompt("ta", "да блять сколько можно")  # weight 2.0 -> L2
