@@ -1014,6 +1014,21 @@ class TestAuditor(TempState):
             self.assertIn("git log with commit timestamps", summary)
             self.assertIn("initial", summary)
 
+    def test_git_summary_never_waits_on_pager_locks_or_prompts(self):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["env"] = kwargs.get("env") or {}
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.git_summary(str(PROJECT_DIR))
+        self.assertIn("--no-pager", seen["argv"])
+        self.assertEqual(seen["env"]["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(seen["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(seen["env"]["GIT_PAGER"], "cat")
+
     def test_run_auditor_missing_cli(self):
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p: ["definitely-not-a-real-cli-xyz", p]}):

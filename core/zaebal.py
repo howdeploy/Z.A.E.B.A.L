@@ -954,11 +954,19 @@ def session_evidence(payload, cfg, host="unknown", max_chars=None):
 def git_summary(cwd, diff_chars=4000, log_count=12):
     if not cwd or not Path(cwd).is_dir():
         return "(working directory unavailable)"
+    # Never wait on a pager, an index lock held by an editor, or a credential
+    # prompt: a hook that blocks for 10s on every git call is a silent stall.
+    git_env = {
+        **os.environ, "GIT_PAGER": "cat", "PAGER": "cat",
+        "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
+    }
+
     def run(*args):
         try:
             r = subprocess.run(
-                ["git", "-C", cwd, *args],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                ["git", "--no-pager", "-C", cwd, *args],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=10, env=git_env,
             )
             return r.stdout.strip()
         except Exception:
