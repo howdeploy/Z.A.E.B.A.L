@@ -456,6 +456,72 @@ class TestTelemetry(TempState):
         self.assertNotIn("prompt", raw)
 
 
+class TestGuard(TempState):
+    def test_shell_read_only_classifier(self):
+        for command in (
+            "git status", "git --no-pager log -5 --oneline", "git diff --cached | head -50",
+            "ls -la && cat README.md", "grep -rn foo src/ | wc -l", "python3 -c 'print(1)'",
+            "sed -n 10,20p core/zaebal.py", "curl -sI https://example.org", "",
+            "env ZAEBAL_STATE_DIR=/x /usr/bin/python3 -X utf8 /y/zaebal.py --dismiss-trigger=abc",
+            "python3 ~/.zaebal/core/zaebal.py --control status",
+        ):
+            self.assertTrue(zaebal.shell_is_read_only(command), command)
+        for command in (
+            "git commit -m x", "git stash", "git checkout -- .", "echo x > file",
+            "cat a | tee b", "sed -i 's/a/b/' f", "rm -rf build", "npm install",
+            "python3 setup.py install", "ls; touch marker", "git status && git push",
+            "find . -name '*.pyc' | xargs rm", "mkdir -p out", "docker compose up -d",
+        ):
+            self.assertFalse(zaebal.shell_is_read_only(command), command)
+
+    def test_tool_classifier(self):
+        self.assertFalse(zaebal.tool_is_mutating("Read", {"file_path": "x"}))
+        self.assertFalse(zaebal.tool_is_mutating("Agent", {"prompt": "audit"}))
+        self.assertFalse(zaebal.tool_is_mutating("Bash", {"command": "git status"}))
+        self.assertTrue(zaebal.tool_is_mutating("Edit", {"file_path": "x"}))
+        self.assertTrue(zaebal.tool_is_mutating("Write", {}))
+        self.assertTrue(zaebal.tool_is_mutating("Bash", {"command": "git commit -m x"}))
+        self.assertTrue(zaebal.tool_is_mutating("mcp__github__create_issue", {}))
+        self.assertFalse(zaebal.tool_is_mutating("mcp__github__list_issues", {}))
+        self.assertFalse(zaebal.tool_is_mutating("SomeFutureTool", {}))  # unknown: fail-open
+
+    def test_guard_is_silent_below_level_three(self):
+        zaebal.record_trigger("g", weight=1.0)
+        zaebal.record_trigger("g", weight=1.0)
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g", "tool_name": "Edit", "tool_input": {}}, zaebal.load_config()))
+
+    def test_guard_denies_mutations_at_level_three_until_acknowledged(self):
+        for _ in range(4):
+            zaebal.record_trigger("g3", weight=1.0)
+        cfg = zaebal.load_config()
+        deny = zaebal.guard_decision({"session_id": "g3", "tool_name": "Edit",
+                                      "tool_input": {"file_path": "a.py"}}, cfg)
+        self.assertIsNotNone(deny)
+        output = deny[0]["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PreToolUse")
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn("level-3 STOP", output["permissionDecisionReason"])
+        self.assertIn("продолжай", output["permissionDecisionReason"])
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g3", "tool_name": "Read", "tool_input": {}}, cfg))
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g3", "tool_name": "Bash", "tool_input": {"command": "git diff"}}, cfg))
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "other", "tool_name": "Edit", "tool_input": {}}, cfg))
+        zaebal.acknowledge("g3")
+        self.assertIsNone(zaebal.guard_decision(
+            {"session_id": "g3", "tool_name": "Edit", "tool_input": {}}, cfg))
+
+    def test_guard_respects_the_mutation_lock_switch_and_dismissal(self):
+        _, _, token = zaebal.record_trigger("g4", weight=4.0, return_token=True)
+        payload = {"session_id": "g4", "tool_name": "Write", "tool_input": {}}
+        self.assertIsNotNone(zaebal.guard_decision(payload, zaebal.load_config()))
+        self.assertIsNone(zaebal.guard_decision(payload, {**zaebal.load_config(), "mutation_lock": False}))
+        zaebal.dismiss_trigger(token)
+        self.assertIsNone(zaebal.guard_decision(payload, zaebal.load_config()))
+
+
 class TestReport(TempState):
     def test_ack_journals_the_closed_streak_as_metadata(self):
         zaebal.record_trigger("s", now=1000.0, weight=1.0)
@@ -651,6 +717,11 @@ assert.equal(config.manual_trigger, false);
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(user_config.read_text()), saved_config)
+            claude_hooks = json.loads((portable_home / ".claude/settings.json").read_text())["hooks"]
+            guard = [h["command"] for g in claude_hooks.get("PreToolUse", []) for h in g["hooks"]]
+            self.assertEqual(guard, ["python3 ~/.zaebal/core/zaebal.py --host claude --guard"])
+            codex_hooks = json.loads((portable_home / ".codex/hooks.json").read_text())["hooks"]
+            self.assertNotIn("PreToolUse", codex_hooks)
             installed = [
                 portable_home / ".zaebal/core/zaebal.py",
                 portable_home / ".agents/skills/zaebal/SKILL.md",
@@ -1653,6 +1724,47 @@ class TestEndToEnd(TempState):
         self.assertEqual(self._prompt("calm2", "ты опять сломал сборку"), "")
         self.set_config(auto_trigger=False)
         self.assertEqual(self._prompt("calm3", "ты опять сломал сборку"), "")
+
+    def test_guard_hook_end_to_end_with_journal(self):
+        self.set_config(auditor_command="no-such-cli-xyz")
+        for i in range(4):
+            self._prompt("gh", f"ты заебал {i}")
+        def guard(tool_name, tool_input):
+            r = self.run_core({"session_id": "gh", "tool_name": tool_name,
+                               "tool_input": tool_input, "hook_event_name": "PreToolUse"},
+                              "--host", "claude", "--guard")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout
+        denied = guard("Edit", {"file_path": "x", "new_string": "SECRET_INPUT"})
+        decision = json.loads(denied)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertEqual(guard("Read", {"file_path": "x"}), "")
+        self.assertEqual(guard("Bash", {"command": "git status"}), "")
+        self.assertIn("deny", guard("Bash", {"command": "git commit -am wip"}))
+        journal = zaebal.INCIDENTS_FILE.read_text()
+        events = [json.loads(l) for l in journal.splitlines()]
+        denials = [e for e in events if e["kind"] == "guard_deny"]
+        self.assertEqual([e["tool"] for e in denials], ["Edit", "Bash"])
+        self.assertNotIn("SECRET_INPUT", journal)
+        self.assertNotIn("wip", journal)
+        # the injected dismiss command itself must pass the guard
+        protocol = self._prompt("gh", "ты заебал ещё")
+        dismiss = next(line.strip().strip("`") for line in protocol.splitlines()
+                       if "--dismiss-trigger=" in line)
+        self.assertEqual(guard("Bash", {"command": dismiss}), "")
+        # acknowledgment lifts the lock
+        self._prompt("gh", "хорошо, продолжай")
+        self.assertEqual(guard("Edit", {"file_path": "x"}), "")
+        report = zaebal.build_report(zaebal.load_incidents())
+        self.assertEqual(report["mutation_lock"], {"denied_tool_calls": 2, "sessions_with_denials": 1})
+
+    def test_guard_fails_open_on_garbage(self):
+        r = self.run_core({}, "--guard")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        r = subprocess.run([sys.executable, str(CORE_DIR / "zaebal.py"), "--guard"],
+                           input="not json", capture_output=True, text=True,
+                           env=dict(os.environ, ZAEBAL_STATE_DIR=zaebal.STATE_DIR), timeout=20)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
 
     def test_praise_silences_core(self):
         self.assertEqual(self._prompt("tp", "заебись, работает!"), "")

@@ -5,6 +5,11 @@ Zaebal? Audit. Errors. Break. Analize. Leave no assumption.
 
 Modes:
   --control ...      Show settings or toggle auto/manual triggers; no stdin read.
+  --guard            PreToolUse hook (Claude Code). While the session's streak
+                     is at level 3 and the user has not acknowledged, mutating
+                     tools are denied with a structured decision; read-only
+                     tools, auditor sub-agents and the protocol's own dismiss /
+                     control commands stay available. Fail-open on any error.
   default            UserPromptSubmit hook. Detects profanity (ru/en/zh) in the
                      user's prompt, tracks the streak per session and prints the
                      escalation protocol plus a session/Git evidence locator for
@@ -64,6 +69,7 @@ DEFAULT_CONFIG = {
     "auditor_prompt_via": "argv",  # custom auditor_command only: "argv" (appended) or "stdin"
     "transcript_tail_chars": 12000,
     "agent_context_tail_chars": 2500,
+    "mutation_lock": True,       # --guard denies mutating tools during a level-3 stop
     "light_first_signal": True,  # streak weight < 1 gets the short L1-light protocol
     "calm_complaints": True,     # second-person complaint without profanity counts 0.5
     "transcript_snapshot_chars": 200000,  # rendered text snapshot for auditors; 0 disables
@@ -528,7 +534,7 @@ def validate_config(cfg):
     ):
         out["auditor_command"] = command
     for key in ("allow_unsafe_auditor", "auto_trigger", "manual_trigger",
-                "light_first_signal", "calm_complaints"):
+                "light_first_signal", "calm_complaints", "mutation_lock"):
         if isinstance(cfg.get(key), bool):
             out[key] = cfg[key]
 
@@ -815,7 +821,7 @@ def dismiss_trigger(trigger_id, now=None):
 def record_incident(session_id, level, kind, weight,
                     auditor_invoked=False, verdict_received=False, ack=False,
                     now=None, trigger_id=None, retracted_trigger_id=None,
-                    resolution=None):
+                    resolution=None, tool=None):
     """Append metadata-only telemetry. Logging failures never block the hook."""
     event = {
         "ts": now if now is not None else time.time(),
@@ -831,6 +837,8 @@ def record_incident(session_id, level, kind, weight,
     }
     if resolution is not None:
         event["resolution"] = resolution
+    if tool is not None:
+        event["tool"] = tool  # tool name only; tool input is never journaled
     try:
         with _locked():
             STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -913,6 +921,11 @@ def build_report(events):
                 str(level): sum(1 for e in resolved if e["resolution"].get("peak_level") == level)
                 for level in (1, 2, 3)
             },
+        },
+        "mutation_lock": {
+            "denied_tool_calls": sum(1 for e in events if e.get("kind") == "guard_deny"),
+            "sessions_with_denials": len({e.get("session_id") for e in events
+                                          if e.get("kind") == "guard_deny"}),
         },
         "external_auditor": {
             "invoked": len(auditor_calls),
@@ -1484,6 +1497,123 @@ def classify_payload(payload, cfg=None):
     return text, scoped_text, kind
 
 
+# ------------------------------------------------------------------ guard
+
+# Tools that never mutate the repository or the outside world. Anything not
+# listed and not matched below is allowed too: the lock is a guardrail for
+# the known mutation paths, and an unknown tool must not brick the session.
+READ_ONLY_TOOLS = {
+    "Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch",
+    "TodoWrite", "TodoRead", "Task", "Agent", "AskUserQuestion", "ToolSearch",
+    "Skill", "ListAgents", "BashOutput", "KillShell", "TaskStop", "Monitor",
+    "EnterPlanMode", "ExitPlanMode", "LSP",
+}
+MUTATING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "SendMessage"}
+_MCP_READ_ONLY_HINT = re.compile(
+    r"(?:^|_)(?:read|get|list|search|query|fetch|resolve|describe|status|find)(?:_|$)", re.I,
+)
+# Shell: allow only pipelines whose every segment starts with a read-only
+# command and that contain no redirection or known mutating verb.
+_SHELL_READ_ONLY_HEAD = re.compile(
+    r"^(?:git\s+(?:--no-pager\s+)?(?:status|diff|log|show|branch|rev-parse|ls-files"
+    r"|blame|remote|describe|stash\s+list|tag|cat-file|ls-remote|reflog)\b"
+    r"|(?:ls|cat|head|tail|wc|grep|rg|egrep|fgrep|find|pwd|echo|printf|stat|file|which"
+    r"|type|env|printenv|diff|tree|du|df|jq|realpath|readlink|less|more|uname|date"
+    r"|whoami|id|hostname|sort|uniq|cut|tr|awk|column|md5sum|md5|sha1sum|sha256sum"
+    r"|shasum|basename|dirname|test|true|false|cd|nl|od|xxd|strings|ps|lsof|netstat"
+    r"|ss|dig|nslookup|curl\s+(?:-[A-Za-z]*I\b|--head\b)|python3?\s+-c\s+[\"']print"
+    r"|sed\s+-n)\b)",
+)
+_SHELL_MUTATION = re.compile(
+    r"(?<![<\d])>|\btee\b|\bxargs\b|\brm\b|\bmv\b|\bcp\b|\bsed\s+-[a-zA-Z]*i|\bchmod\b"
+    r"|\bchown\b|\bmkdir\b|\btouch\b|\bln\b|\btruncate\b|\bdd\b"
+    r"|\bgit\s+(?:add|commit|push|pull|fetch|checkout|switch|reset|rebase|merge|revert"
+    r"|stash(?!\s+list)|apply|cherry-pick|clean|rm|mv|restore|tag\s+-[ad]|branch\s+-[dDm]"
+    r"|worktree|submodule|config)\b"
+    r"|\b(?:npm|pnpm|yarn|pip3?|uv|cargo|make|docker|kubectl|terraform|ansible|systemctl"
+    r"|brew|apt(?:-get)?|launchctl|crontab)\b"
+)
+_PROTOCOL_OWN_COMMAND = re.compile(r"zaebal\.py['\"]?\s+(?:--dismiss-trigger=|--control\b)")
+
+
+def shell_is_read_only(command):
+    """Conservative: unknown shapes are treated as mutating."""
+    command = str(command or "").strip()
+    if not command:
+        return True
+    if _PROTOCOL_OWN_COMMAND.search(command):
+        return True  # the injected dismiss / control commands must stay runnable
+    if _SHELL_MUTATION.search(command):
+        return False
+    for segment in re.split(r"\|\||&&|;|\|", command):
+        segment = segment.strip()
+        if segment and not _SHELL_READ_ONLY_HEAD.match(segment):
+            return False
+    return True
+
+
+def tool_is_mutating(tool_name, tool_input):
+    name = str(tool_name or "")
+    if name in READ_ONLY_TOOLS:
+        return False
+    if name in MUTATING_TOOLS:
+        return True
+    if name == "Bash":
+        command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+        return not shell_is_read_only(command)
+    if name.startswith("mcp__"):
+        return not _MCP_READ_ONLY_HINT.search(name.split("__")[-1])
+    return False
+
+
+def session_level(session_id, now=None):
+    now = now if now is not None else time.time()
+    stamps = _session_entry(_load_state(), session_id)["stamps"]
+    total = sum(stamp[1] for stamp in _norm_stamps(stamps, now))
+    return (level_for(total) if total > 0 else 0), total
+
+
+def guard_decision(payload, cfg):
+    """Return the PreToolUse decision dict, or None to stay silent."""
+    if not cfg.get("mutation_lock", True):
+        return None
+    session_id = str(
+        payload.get("session_id") or payload.get("sessionID")
+        or payload.get("transcript_path") or payload.get("cwd") or "unknown"
+    )
+    level, total = session_level(session_id)
+    if level < 3:
+        return None
+    tool_name = payload.get("tool_name")
+    if not tool_is_mutating(tool_name, payload.get("tool_input")):
+        return None
+    reason = (
+        f"Z.A.E.B.A.L. level-3 STOP is active for this session (streak weight {total:g}): "
+        f"'{tool_name}' would mutate state. Mutations stay locked until the user explicitly "
+        "acknowledges continuation (\"продолжай\", \"согласен\", \"по плану\", \"continue\", "
+        "\"go ahead\"). Read-only tools, the two internal auditor sub-agents and the "
+        "protocol's own dismiss/control commands remain available. Do not work around "
+        "the lock; finish the audit, present the handoff, and wait."
+    )
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }}, session_id, level, tool_name
+
+
+def mode_guard(payload):
+    """PreToolUse handler: silent allow, or a structured deny during an L3 stop."""
+    cfg = load_config()
+    decision = guard_decision(payload, cfg)
+    if not decision:
+        return 0
+    output, session_id, level, tool_name = decision
+    record_incident(session_id, level, "guard_deny", 0.0, tool=str(tool_name))
+    sys.stdout.write(json.dumps(output, ensure_ascii=False) + "\n")
+    return 0
+
+
 def mode_prompt(host, payload):
     """UserPromptSubmit handler."""
     cfg = load_config()
@@ -1616,6 +1746,8 @@ def main():
                         help="remove exactly this tokenized false trigger")
     modes.add_argument("--classify-only", action="store_true",
                         help="classify the payload without changing state")
+    modes.add_argument("--guard", action="store_true",
+                        help="PreToolUse hook: deny mutating tools during a level-3 stop")
     modes.add_argument("--control", nargs="+",
                         help="manage settings: status, report, auto on/off, manual on/off, on/off")
     args = parser.parse_args()
@@ -1655,6 +1787,8 @@ def main():
             _, _, kind = classify_payload(payload)
             sys.stdout.write(kind + "\n")
             return 0
+        if args.guard:
+            return mode_guard(payload)
         return mode_prompt(args.host, payload)
     except Exception:
         return 0  # fail-open
