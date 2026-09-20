@@ -376,7 +376,7 @@ class TestAcknowledge(TempState):
         self.assertEqual(zaebal.STATE_FILE.read_text(), before)
 
     def test_ack_persistence_failure_is_visible_to_agent(self):
-        with mock.patch.object(zaebal, "acknowledge", return_value=None):
+        with mock.patch.object(zaebal, "acknowledge_details", return_value=(None, None)):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 zaebal.mode_prompt("codex", {
@@ -430,6 +430,61 @@ class TestTelemetry(TempState):
         )
         self.assertEqual(event["session_id"], "session-1")
         self.assertNotIn("prompt", raw)
+
+
+class TestReport(TempState):
+    def test_ack_journals_the_closed_streak_as_metadata(self):
+        zaebal.record_trigger("s", now=1000.0, weight=1.0)
+        zaebal.record_trigger("s", now=1100.0, weight=1.0)
+        status, resolution = zaebal.acknowledge_details("s", now=1160.0)
+        self.assertTrue(status)
+        self.assertEqual(resolution["triggers_cleared"], 2)
+        self.assertEqual(resolution["peak_level"], 2)
+        self.assertEqual(resolution["seconds_since_first_trigger"], 160.0)
+        self.assertEqual(resolution["seconds_since_last_trigger"], 60.0)
+        zaebal.record_incident("s", 0, "ack", 0.0, ack=True, resolution=resolution, now=1160.0)
+        event = json.loads(zaebal.INCIDENTS_FILE.read_text().splitlines()[-1])
+        self.assertEqual(event["resolution"]["triggers_cleared"], 2)
+        self.assertNotIn("prompt", json.dumps(event))
+
+    def test_report_aggregates_false_positive_rate_and_loop_duration(self):
+        events = [
+            {"ts": 1.0, "session_id": "a", "kind": "directed", "level": 1, "auditor_invoked": False},
+            {"ts": 2.0, "session_id": "a", "kind": "ambiguous", "level": 1},
+            {"ts": 3.0, "session_id": "a", "kind": "false_trigger", "level": 0},
+            {"ts": 4.0, "session_id": "a", "kind": "directed", "level": 2},
+            {"ts": 5.0, "session_id": "a", "kind": "ack", "ack": True,
+             "resolution": {"triggers_cleared": 2, "peak_level": 2,
+                            "seconds_since_first_trigger": 240.0}},
+            {"ts": 6.0, "session_id": "b", "kind": "directed", "level": 3,
+             "auditor_invoked": True, "verdict_received": True},
+            {"ts": 7.0, "session_id": "b", "kind": "directed", "level": 3,
+             "auditor_invoked": True, "verdict_received": False},
+            {"ts": 8.0, "session_id": "b", "kind": "ack", "ack": True,
+             "resolution": {"triggers_cleared": 2, "peak_level": 3,
+                            "seconds_since_first_trigger": 60.0}},
+            {"ts": 9.0, "session_id": "c", "kind": "manual", "level": 1},
+        ]
+        report = zaebal.build_report(events)
+        self.assertEqual(report["triggers"]["total"], 6)
+        self.assertEqual(report["triggers"]["by_kind"], {"directed": 4, "ambiguous": 1, "manual": 1})
+        self.assertEqual(report["triggers"]["by_level"], {"1": 3, "2": 1, "3": 2})
+        self.assertEqual(report["false_triggers"], {"retracted": 1, "rate_of_automatic": 0.2})
+        self.assertEqual(report["sessions_with_triggers"], 3)
+        self.assertEqual(report["resolutions"]["with_cleared_streak"], 2)
+        self.assertEqual(report["resolutions"]["median_seconds_first_trigger_to_ack"], 150.0)
+        self.assertEqual(report["resolutions"]["median_triggers_per_resolved_streak"], 2)
+        self.assertEqual(report["resolutions"]["peak_level_counts"], {"1": 0, "2": 1, "3": 1})
+        self.assertEqual(report["external_auditor"], {"invoked": 2, "verdicts": 1, "verdict_rate": 0.5})
+
+    def test_empty_journal_reports_zero_not_crash(self):
+        report = zaebal.build_report(zaebal.load_incidents())
+        self.assertEqual(report["events"], 0)
+        self.assertIsNone(report["false_triggers"]["rate_of_automatic"])
+
+    def test_bad_journal_lines_are_skipped(self):
+        zaebal.INCIDENTS_FILE.write_text('{"kind":"directed","ts":1}\nnot json\n[1,2]\n')
+        self.assertEqual(len(zaebal.load_incidents()), 1)
 
 
 class TestConfig(TempState):
@@ -1311,6 +1366,22 @@ class TestEndToEnd(TempState):
                 self.assertEqual(json.loads(zaebal.CONFIG_USER.read_text())["custom_key"], "preserve me")
                 zaebal.STATE_FILE.unlink()
                 zaebal.INCIDENTS_FILE.unlink()
+
+    def test_report_command_in_chat_and_cli(self):
+        for i in range(2):
+            self._prompt("rep", f"ты заебал {i}")
+        self._prompt("rep", "продолжай")
+        out = self._prompt("rep", "zaebal report")
+        self.assertIn("<zaebal-control>", out)
+        self.assertIn("Incident report, not an audit trigger", out)
+        self.assertIn('"with_cleared_streak": 1', out)
+        self.assertIn('"peak_level_counts"', out)
+        cli = self.run_core({}, "--control", "report")
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        report = json.loads(cli.stdout)
+        self.assertEqual(report["triggers"]["total"], 2)
+        self.assertEqual(report["resolutions"]["median_triggers_per_resolved_streak"], 2)
+        self.assertFalse(Path(zaebal.STATE_DIR, "config.json").exists())
 
     def test_native_invocation_aliases_and_read_only_probe(self):
         for prefix in ("zaebal", "/zaebal", "$zaebal", "/skill:zaebal"):

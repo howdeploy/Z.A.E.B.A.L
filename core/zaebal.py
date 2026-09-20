@@ -185,7 +185,7 @@ _META_SUBJECT = re.compile(
 _URL = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 _CONTROL = re.compile(
     r"(?:zaebal|/zaebal|\$zaebal|/skill:zaebal)"
-    r"(?:\s+(status|config|help|audit|on|off|(?:auto|manual)\s+(?:on|off)))?",
+    r"(?:\s+(status|config|help|report|audit|on|off|(?:auto|manual)\s+(?:on|off)))?",
     re.IGNORECASE,
 )
 _BLOCKQUOTE_LINE = re.compile(r"(?m)^\s*>.*$")
@@ -559,8 +559,21 @@ def mode_control(command, hook=False):
     elif command in ("auto on", "auto off", "manual on", "manual off"):
         key, value = command.split()
         updates[key + "_trigger"] = value == "on"
+    elif command == "report":
+        report = build_report(load_incidents())
+        if not hook:
+            sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+            return 0
+        sys.stdout.write(
+            "<zaebal-control>\nIncident report, not an audit trigger. Report these "
+            "numbers; do not invoke the audit or repeat this command.\n"
+            "incidents_path: " + _markup_safe(str(INCIDENTS_FILE)) + "\n"
+            + _markup_safe(json.dumps(report, ensure_ascii=False, indent=2)) + "\n"
+            "</zaebal-control>\n"
+        )
+        return 0
     elif command not in ("status", "config", "help", "audit"):
-        sys.stderr.write("Unknown control. Use status, auto on/off, manual on/off, on/off.\n")
+        sys.stderr.write("Unknown control. Use status, report, auto on/off, manual on/off, on/off.\n")
         return 1
     try:
         if updates:
@@ -583,7 +596,7 @@ def mode_control(command, hook=False):
         "Report these settings; do not invoke the audit or repeat this command.\n"
         + message + "config_path: " + _markup_safe(str(CONFIG_USER)) + "\n"
         + _markup_safe(json.dumps(cfg, ensure_ascii=False, indent=2)) + "\n"
-        "Commands: zaebal [status|config|help], zaebal auto on/off, "
+        "Commands: zaebal [status|config|help], zaebal report, zaebal auto on/off, "
         "zaebal manual on/off, zaebal on/off, zaebal audit.\n"
         "Settings apply to all hosts on the next message. Existing streaks are unchanged.\n"
         "</zaebal-control>\n"
@@ -699,27 +712,55 @@ def record_trigger(session_id, now=None, weight=1.0, return_token=False):
     return total, level
 
 
-def acknowledge(session_id):
+def acknowledge(session_id, now=None):
     """Reset a streak durably.
 
     Returns True after a durable reset, False when no incident exists, and None
     when the state write failed.
     """
+    return acknowledge_details(session_id, now)[0]
+
+
+def acknowledge_details(session_id, now=None):
+    """Reset a streak and describe what it closed: (status, resolution).
+
+    ``resolution`` is metadata only (counts, level, durations) so the journal
+    can later answer "how long did a loop last" and "how many triggers did it
+    take" without storing any message text.
+    """
+    now = now if now is not None else time.time()
     try:
         with _locked():
             state = _load_state()
             entry = state.get(session_id)
             if not isinstance(entry, (dict, list)):
-                return False
+                return False, None
             entry = _session_entry(state, session_id)
             if not entry["stamps"]:
-                return False
+                return False, None
+            live = _norm_stamps(entry["stamps"], now)
+            resolution = incident_resolution(live, now)
             entry["stamps"] = []
             if not _save_state(state):
-                return None
+                return None, None
     except OSError:
-        return None
-    return True
+        return None, None
+    return True, resolution
+
+
+def incident_resolution(live_stamps, now):
+    """Summarize the streak that an acknowledgment closes."""
+    if not live_stamps:
+        return {"triggers_cleared": 0, "peak_level": 0,
+                "seconds_since_first_trigger": None, "seconds_since_last_trigger": None}
+    first = min(stamp[0] for stamp in live_stamps)
+    last = max(stamp[0] for stamp in live_stamps)
+    return {
+        "triggers_cleared": len(live_stamps),
+        "peak_level": level_for(sum(stamp[1] for stamp in live_stamps)),
+        "seconds_since_first_trigger": round(max(0.0, now - first), 1),
+        "seconds_since_last_trigger": round(max(0.0, now - last), 1),
+    }
 
 
 def dismiss_trigger(trigger_id, now=None):
@@ -750,7 +791,8 @@ def dismiss_trigger(trigger_id, now=None):
 
 def record_incident(session_id, level, kind, weight,
                     auditor_invoked=False, verdict_received=False, ack=False,
-                    now=None, trigger_id=None, retracted_trigger_id=None):
+                    now=None, trigger_id=None, retracted_trigger_id=None,
+                    resolution=None):
     """Append metadata-only telemetry. Logging failures never block the hook."""
     event = {
         "ts": now if now is not None else time.time(),
@@ -764,6 +806,8 @@ def record_incident(session_id, level, kind, weight,
         "trigger_id": trigger_id,
         "retracted_trigger_id": retracted_trigger_id,
     }
+    if resolution is not None:
+        event["resolution"] = resolution
     try:
         with _locked():
             STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -774,6 +818,85 @@ def record_incident(session_id, level, kind, weight,
         sys.stdout.write('<zaebal-state-error>Incident telemetry could not be saved.'
                          '</zaebal-state-error>\n')
         return False  # logging must not prevent delivery of the protocol
+
+
+def load_incidents(path=None):
+    """Parse the journal leniently: one bad line never hides the rest."""
+    path = Path(path) if path else INCIDENTS_FILE
+    events = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    except Exception:
+        pass
+    return events
+
+
+def _median(values):
+    values = sorted(v for v in values if isinstance(v, (int, float)))
+    if not values:
+        return None
+    middle = len(values) // 2
+    return (values[middle] if len(values) % 2
+            else round((values[middle - 1] + values[middle]) / 2, 1))
+
+
+def build_report(events):
+    """Aggregate the journal into the numbers that decide the product's fate.
+
+    Genuine triggers vs. retracted ones give the false-positive rate; acks with
+    a resolution give loop duration and triggers-per-loop; verdict counts show
+    how often the external auditor actually answered. No message text exists
+    in the journal, so none can leak here.
+    """
+    trigger_kinds = ("directed", "ambiguous", "complaint", "manual")
+    triggers = [e for e in events if e.get("kind") in trigger_kinds]
+    automatic = [e for e in triggers if e.get("kind") != "manual"]
+    retracted = [e for e in events if e.get("kind") == "false_trigger"]
+    acks = [e for e in events if e.get("ack")]
+    resolved = [e for e in acks if isinstance(e.get("resolution"), dict)
+                and e["resolution"].get("triggers_cleared")]
+    levels = {str(level): 0 for level in (1, 2, 3)}
+    kinds = {}
+    for e in triggers:
+        levels[str(e.get("level"))] = levels.get(str(e.get("level")), 0) + 1
+        kinds[e.get("kind")] = kinds.get(e.get("kind"), 0) + 1
+    auditor_calls = [e for e in triggers if e.get("auditor_invoked")]
+    verdicts = [e for e in auditor_calls if e.get("verdict_received")]
+    stamps = [e.get("ts") for e in events if isinstance(e.get("ts"), (int, float))]
+    return {
+        "events": len(events),
+        "span_days": round((max(stamps) - min(stamps)) / 86400, 1) if len(stamps) > 1 else 0,
+        "sessions_with_triggers": len({e.get("session_id") for e in triggers}),
+        "triggers": {"total": len(triggers), "by_kind": kinds, "by_level": levels},
+        "false_triggers": {
+            "retracted": len(retracted),
+            "rate_of_automatic": (round(len(retracted) / len(automatic), 3)
+                                  if automatic else None),
+        },
+        "resolutions": {
+            "acknowledgments": len(acks),
+            "with_cleared_streak": len(resolved),
+            "median_seconds_first_trigger_to_ack": _median(
+                e["resolution"].get("seconds_since_first_trigger") for e in resolved),
+            "median_triggers_per_resolved_streak": _median(
+                e["resolution"].get("triggers_cleared") for e in resolved),
+            "peak_level_counts": {
+                str(level): sum(1 for e in resolved if e["resolution"].get("peak_level") == level)
+                for level in (1, 2, 3)
+            },
+        },
+        "external_auditor": {
+            "invoked": len(auditor_calls),
+            "verdicts": len(verdicts),
+            "verdict_rate": round(len(verdicts) / len(auditor_calls), 3) if auditor_calls else None,
+        },
+    }
 
 
 # ---------------------------------------------------------------- auditor
@@ -1356,11 +1479,11 @@ def mode_prompt(host, payload):
         # Continuation resets the emotional streak; it does not prove a fix.
         acked = is_acknowledgment(scoped_text)
         if acked:
-            ack_result = acknowledge(session_id)
+            ack_result, resolution = acknowledge_details(session_id)
             if ack_result:
                 record_incident(
                     session_id, 0, "praise" if kind == "praise" else "ack", 0.0,
-                    ack=True,
+                    ack=True, resolution=resolution,
                 )
                 sys.stdout.write(ACK_NOTICE)
             elif ack_result is None:
@@ -1463,7 +1586,7 @@ def main():
     modes.add_argument("--classify-only", action="store_true",
                         help="classify the payload without changing state")
     modes.add_argument("--control", nargs="+",
-                        help="manage settings: status, auto on/off, manual on/off, on/off")
+                        help="manage settings: status, report, auto on/off, manual on/off, on/off")
     args = parser.parse_args()
 
     if args.control:
