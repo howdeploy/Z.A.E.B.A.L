@@ -60,6 +60,8 @@ DEFAULT_CONFIG = {
     "auditor_timeout_sec": 90,
     "auditor_command": "",    # custom auditor command; prompt is appended as last arg
     "allow_unsafe_auditor": False,  # opt in to built-ins without enforced read-only mode
+    "auditor_model": "",      # model override for claude/codex/opencode auditors ("" = CLI default)
+    "auditor_prompt_via": "argv",  # custom auditor_command only: "argv" (appended) or "stdin"
     "transcript_tail_chars": 12000,
     "agent_context_tail_chars": 2500,
 }
@@ -68,17 +70,38 @@ DEFAULT_CONFIG = {
 # Where the CLI supports it, the auditor is restricted to read-only operation
 # (kimi -p has no such flag — audit prompt instructs read-only, and the
 # static deny rules of the host config still apply).
+#
+# The audit prompt carries the user's verbatim profanity plus a transcript
+# excerpt and diffs. Where the CLI reads stdin (claude -p, codex exec -) it is
+# delivered there: not visible in `ps`, and not subject to the Windows 32K
+# command-line limit. Builders take (prompt, model); stdin auditors ignore
+# the prompt argument.
+def _model_args(auditor, model):
+    flag = AUDITOR_MODEL_FLAG.get(auditor)
+    return [flag, model] if flag and model else []
+
+
+AUDITOR_MODEL_FLAG = {"claude": "--model", "codex": "--model", "opencode": "--model"}
+AUDITOR_PROMPT_VIA = {"claude": "stdin", "codex": "stdin", "kimi": "argv", "opencode": "argv"}
 AUDITOR_CMDS = {
-    "kimi": lambda prompt: ["kimi", "-p", prompt],
-    "claude": lambda prompt: [
-        "claude", "-p", prompt, "--safe-mode", "--tools", "Read,Grep,Glob",
+    "kimi": lambda prompt, model=None: ["kimi", "-p", prompt],
+    "claude": lambda prompt, model=None: [
+        "claude", "-p", "--safe-mode", "--tools", "Read,Grep,Glob",
+        *_model_args("claude", model),
     ],
-    "codex": lambda prompt: ["codex", "exec", "--skip-git-repo-check",
-                             "--sandbox", "read-only", "--ephemeral",
-                             "--ignore-user-config", "--ignore-rules", prompt],
-    "opencode": lambda prompt: ["opencode", "run", prompt],
+    "codex": lambda prompt, model=None: [
+        "codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
+        "--ephemeral", "--ignore-user-config", "--ignore-rules",
+        *_model_args("codex", model), "-",
+    ],
+    "opencode": lambda prompt, model=None: [
+        "opencode", "run", *_model_args("opencode", model), prompt,
+    ],
 }
 UNSANDBOXED_AUDITORS = {"kimi", "opencode"}
+# Windows CreateProcess rejects command lines above 32767 characters; leave
+# headroom for the CLI path and flags when the prompt must travel via argv.
+ARGV_PROMPT_LIMIT = 28000
 AUDIT_SECTION_LABELS = (
     "CONTRACT", "DIVERGENCE POINT", "FACTS", "HYPOTHESES",
     "DISCRIMINATING CHECK", "PREVIOUS AUDIT", "WRONG BELIEF", "STATUS",
@@ -483,6 +506,13 @@ def validate_config(cfg):
     for key in ("allow_unsafe_auditor", "auto_trigger", "manual_trigger"):
         if isinstance(cfg.get(key), bool):
             out[key] = cfg[key]
+
+    model = cfg.get("auditor_model", out["auditor_model"])
+    if isinstance(model, str) and re.fullmatch(r"[\w.:/-]{0,100}", model):
+        out["auditor_model"] = model
+    via = cfg.get("auditor_prompt_via", out["auditor_prompt_via"])
+    if isinstance(via, str) and via.lower() in ("argv", "stdin"):
+        out["auditor_prompt_via"] = via.lower()
 
     out["auditor_timeout_sec"] = _bounded_int(
         cfg.get("auditor_timeout_sec"), out["auditor_timeout_sec"], 1, 600,
@@ -1101,15 +1131,35 @@ def _markup_safe(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def argv_prompt_limit():
+    """Command-line budget for a prompt passed as an argument; None = unlimited."""
+    return ARGV_PROMPT_LIMIT if os.name == "nt" else None
+
+
+def fit_argv_prompt(prompt):
+    """Clip an argv-delivered prompt to the platform limit, keeping both ends.
+
+    The head holds the auditor instructions and the trigger; the tail holds the
+    repository state. The transcript excerpt in the middle is what gets cut.
+    """
+    limit = argv_prompt_limit()
+    if limit is None or len(prompt) <= limit:
+        return prompt
+    marker = "\n...[prompt clipped to the command-line limit; transcript excerpt shortened]...\n"
+    head = (limit - len(marker)) * 2 // 3
+    tail = limit - len(marker) - head
+    return prompt[:head] + marker + prompt[-tail:]
+
+
 def run_auditor(auditor, prompt, cfg):
     """Run the external auditor CLI. Returns (verdict, error). Exactly one is set."""
     custom = cfg.get("auditor_command", "")
-    if isinstance(custom, list):
-        cmd = custom + [prompt]
-    elif str(custom).strip():
+    if isinstance(custom, list) or str(custom).strip():
+        via = cfg.get("auditor_prompt_via", "argv")
         # Existing POSIX strings remain supported. On Windows use argv arrays
         # for paths with spaces/backslashes, without invoking a command shell.
-        cmd = shlex.split(custom) + [prompt]
+        base = list(custom) if isinstance(custom, list) else shlex.split(custom)
+        cmd = base + ([fit_argv_prompt(prompt)] if via == "argv" else [])
     else:
         if not auditor_will_invoke(auditor, cfg):
             return None, (
@@ -1120,10 +1170,13 @@ def run_auditor(auditor, prompt, cfg):
         builder = AUDITOR_CMDS.get(auditor)
         if builder is None:
             return None, f"unknown auditor: {auditor}"
-        cmd = builder(prompt)
+        via = AUDITOR_PROMPT_VIA.get(auditor, "argv")
+        cmd = builder(fit_argv_prompt(prompt) if via == "argv" else "",
+                      cfg.get("auditor_model") or None)
     try:
         r = subprocess.run(
             cmd,
+            input=prompt if via == "stdin" else None,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=int(cfg.get("auditor_timeout_sec", 90)),
             # the auditor's own prompt contains the user's verbatim profanity;

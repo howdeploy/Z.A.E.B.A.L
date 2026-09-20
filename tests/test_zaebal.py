@@ -1031,13 +1031,13 @@ class TestAuditor(TempState):
 
     def test_run_auditor_missing_cli(self):
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
-        with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p: ["definitely-not-a-real-cli-xyz", p]}):
+        with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": lambda p, m=None: ["definitely-not-a-real-cli-xyz", p]}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", cfg)
         self.assertIsNone(verdict)
         self.assertIn("not found", error)
 
     def test_run_auditor_success(self):
-        fake = lambda p: [sys.executable, "-c", f"print({VALID_AUDIT_VERDICT!r})"]
+        fake = lambda p, m=None: [sys.executable, "-c", f"print({VALID_AUDIT_VERDICT!r})"]
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": fake}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", cfg)
@@ -1070,6 +1070,65 @@ class TestAuditor(TempState):
         self.assertIn("--safe-mode", claude)
         self.assertIn("--tools", claude)
         self.assertNotIn("--allowedTools", claude)
+
+    def test_stdin_auditors_never_place_the_prompt_in_argv(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"], seen["input"] = cmd, kwargs.get("input")
+            return subprocess.CompletedProcess(cmd, 0, stdout=VALID_AUDIT_VERDICT, stderr="")
+
+        for auditor in ("claude", "codex"):
+            with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+                verdict, error = zaebal.run_auditor(auditor, "ты меня заебал: секрет", zaebal.load_config())
+            self.assertEqual(verdict, VALID_AUDIT_VERDICT, error)
+            self.assertNotIn("ты меня заебал: секрет", " ".join(seen["cmd"]))
+            self.assertEqual(seen["input"], "ты меня заебал: секрет")
+        self.assertEqual(seen["cmd"][-1], "-")  # codex reads the prompt from stdin via "-"
+
+    def test_argv_auditors_still_receive_the_prompt_as_an_argument(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"], seen["input"] = cmd, kwargs.get("input")
+            return subprocess.CompletedProcess(cmd, 0, stdout=VALID_AUDIT_VERDICT, stderr="")
+
+        cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
+        with mock.patch.object(zaebal.subprocess, "run", side_effect=fake_run):
+            zaebal.run_auditor("kimi", "prompt text", cfg)
+        self.assertEqual(seen["cmd"][-1], "prompt text")
+        self.assertIsNone(seen["input"])
+
+    def test_custom_command_can_opt_into_stdin_delivery(self):
+        script = "import sys; print(sys.stdin.read().upper())"
+        cfg = zaebal.validate_config({
+            "auditor_command": [sys.executable, "-c", script],
+            "auditor_prompt_via": "stdin",
+        })
+        verdict, error = zaebal.run_auditor("codex", VALID_AUDIT_VERDICT.lower(), cfg)
+        self.assertIsNone(error)
+        self.assertEqual(verdict, VALID_AUDIT_VERDICT.upper())
+
+    def test_auditor_model_is_passed_only_where_the_cli_supports_it(self):
+        self.assertIn("--model", zaebal.AUDITOR_CMDS["claude"]("", "claude-haiku-4-5"))
+        self.assertEqual(zaebal.AUDITOR_CMDS["codex"]("", "o4-mini")[-3:], ["--model", "o4-mini", "-"])
+        self.assertEqual(zaebal.AUDITOR_CMDS["opencode"]("p", "x/y")[-3:], ["--model", "x/y", "p"])
+        self.assertNotIn("--model", zaebal.AUDITOR_CMDS["claude"]("", None))
+        self.assertNotIn("--model", zaebal.AUDITOR_CMDS["kimi"]("p", "anything"))
+        cfg = zaebal.validate_config({"auditor_model": "claude-haiku-4-5"})
+        self.assertEqual(cfg["auditor_model"], "claude-haiku-4-5")
+        cfg = zaebal.validate_config({"auditor_model": "x; rm -rf /"})
+        self.assertEqual(cfg["auditor_model"], "")
+
+    def test_argv_prompt_is_clipped_only_under_a_platform_limit(self):
+        prompt = "H" * 1000 + "M" * 50000 + "T" * 1000
+        self.assertEqual(zaebal.fit_argv_prompt(prompt), prompt) if zaebal.argv_prompt_limit() is None else None
+        with mock.patch.object(zaebal, "argv_prompt_limit", return_value=zaebal.ARGV_PROMPT_LIMIT):
+            clipped = zaebal.fit_argv_prompt(prompt)
+        self.assertLessEqual(len(clipped), zaebal.ARGV_PROMPT_LIMIT)
+        self.assertTrue(clipped.startswith("H" * 1000))
+        self.assertTrue(clipped.endswith("T" * 1000))
+        self.assertIn("clipped", clipped)
 
     def test_unsandboxed_builtin_auditors_are_disabled_by_default(self):
         for auditor in ("kimi", "opencode"):
@@ -1105,7 +1164,7 @@ class TestAuditor(TempState):
         self.assertIn("exited with code 2", error)
 
     def test_exit_zero_malformed_auditor_output_is_not_a_verdict(self):
-        fake = lambda p: [sys.executable, "-c", "print('plausible cause')"]
+        fake = lambda p, m=None: [sys.executable, "-c", "print('plausible cause')"]
         cfg = {**zaebal.load_config(), "allow_unsafe_auditor": True}
         with mock.patch.dict(zaebal.AUDITOR_CMDS, {"kimi": fake}):
             verdict, error = zaebal.run_auditor("kimi", "prompt", cfg)
