@@ -883,6 +883,67 @@ class TestTranscriptTail(unittest.TestCase):
         self.assertIn("[t1 user]", tail)
 
 
+class TestTranscriptHeadAndSnapshot(TempState):
+    def _claude_jsonl(self):
+        records = [
+            {"type": "summary", "summary": "irrelevant index record"},
+            {"type": "user", "timestamp": "2026-09-20T10:00:00Z",
+             "message": {"role": "user", "content": "сделай экспорт в CSV, без изменения схемы"}},
+            {"type": "assistant", "timestamp": "2026-09-20T10:00:05Z",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "меняю схему"}]}},
+            {"type": "user", "timestamp": "2026-09-20T10:01:00Z",
+             "message": {"role": "user", "content": "ты меня заебал"}},
+        ]
+        path = Path(self.tmp.name) / "session.jsonl"
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
+        return path
+
+    def test_head_is_the_first_user_message_not_the_trigger(self):
+        head = zaebal.transcript_head(self._claude_jsonl(), 600)
+        self.assertIn("сделай экспорт в CSV", head)
+        self.assertNotIn("заебал", head)
+        self.assertTrue(head.startswith("[2026-09-20T10:00:00Z user]"))
+
+    def test_inline_head_uses_first_user_record(self):
+        payload = {"session_history": [
+            {"role": "assistant", "content": "привет"},
+            {"role": "user", "content": "почини тест"},
+            {"role": "user", "content": "ты заебал"},
+        ]}
+        self.assertIn("почини тест", zaebal.inline_transcript_head(payload, 600))
+
+    def test_snapshot_is_private_readable_and_carries_both_ends(self):
+        cfg = zaebal.load_config()
+        snap = zaebal.write_transcript_snapshot(self._claude_jsonl(), "claude", "abc/../x y", cfg)
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.parent, zaebal.STATE_DIR / "transcripts" / "claude")
+        self.assertNotIn("/", snap.name.replace(".txt", "")); self.assertNotIn("..", snap.name)
+        if os.name != "nt":
+            self.assertEqual(snap.stat().st_mode & 0o777, 0o600)
+        body = snap.read_text(encoding="utf-8")
+        self.assertIn("## ORIGINAL REQUEST", body)
+        self.assertIn("сделай экспорт в CSV", body)
+        self.assertIn("## CHRONOLOGY", body)
+        self.assertIn("ты меня заебал", body)
+
+    def test_snapshot_is_skipped_when_disabled_or_already_a_snapshot(self):
+        cfg = {**zaebal.load_config(), "transcript_snapshot_chars": 0}
+        self.assertIsNone(zaebal.write_transcript_snapshot(self._claude_jsonl(), "claude", "s", cfg))
+        own = zaebal.STATE_DIR / "transcripts" / "opencode" / "s.txt"
+        own.parent.mkdir(parents=True)
+        own.write_text(json.dumps({"role": "user", "content": "x"}) + "\n")
+        self.assertIsNone(zaebal.write_transcript_snapshot(own, "opencode", "s", zaebal.load_config()))
+
+    def test_audit_prompt_and_locator_quote_the_original_request(self):
+        path = self._claude_jsonl()
+        payload = {"cwd": "/nonexistent", "prompt": "ты меня заебал", "transcript_path": str(path)}
+        prompt = zaebal.build_audit_prompt(payload, 1, zaebal.load_config(), host="claude")
+        self.assertIn("## The original request", prompt)
+        self.assertIn("сделай экспорт в CSV", prompt.split("## The user prompt")[0])
+        block = zaebal.build_agent_context_block(payload, zaebal.load_config(), "claude")
+        self.assertIn("original_request: [2026-09-20T10:00:00Z user] сделай экспорт в CSV", block)
+
+
 class TestAuditor(TempState):
     def test_resolve_same_vendor(self):
         cfg = zaebal.load_config()
@@ -1324,6 +1385,21 @@ class TestEndToEnd(TempState):
         self.assertIn("<zaebal-session-context>", out)
         self.assertIn("DIVERGENCE POINT", out)
 
+    def test_claude_trigger_writes_snapshot_and_exposes_it_early(self):
+        transcript = Path(zaebal.STATE_DIR) / "raw.jsonl"
+        transcript.write_text(json.dumps({"type": "user", "message": {
+            "role": "user", "content": "первичный запрос: сделай миграцию"}}) + "\n")
+        r = self.run_core({"session_id": "snap-1", "prompt": "ты заебал",
+                           "transcript_path": str(transcript)}, "--host", "claude")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertIn(f"transcript_source: {transcript}", out[:512])
+        snapshot = Path(zaebal.STATE_DIR) / "transcripts" / "claude" / "snap-1.txt"
+        self.assertTrue(snapshot.exists())
+        self.assertIn(f"transcript_snapshot: {snapshot}", out[:1024])
+        self.assertIn("original_request: [user] первичный запрос: сделай миграцию", out)
+        self.assertIn("первичный запрос", snapshot.read_text(encoding="utf-8"))
+
     def test_locator_survives_a_bounded_hook_prefix(self):
         transcript = Path(self.tmp.name) / "history.jsonl"
         transcript.write_text(json.dumps({
@@ -1334,7 +1410,10 @@ class TestEndToEnd(TempState):
             "transcript_path": str(transcript),
         }).stdout
         self.assertIn(f"transcript_source: {transcript}", out[:512])
-        self.assertNotIn("LONG_HISTORY_MARKER", out)
+        # A file source means no inline excerpt: only the bounded original
+        # request is quoted, never the 19 000-character history itself.
+        self.assertNotIn("SESSION EXCERPT", out)
+        self.assertLessEqual(out.count("LONG_HISTORY_MARKER"), 600 // len("LONG_HISTORY_MARKER") + 1)
         self.assertIn("Completion gate", out)
 
     def test_missing_source_keeps_inline_evidence_and_marks_it_partial(self):
