@@ -17,24 +17,35 @@ the agent itself runs there. Do not install WSL, Bash, or Linux packages.
 3. For **Codex**, from that checkout run:
 
    ```powershell
-   py -3 scripts/install_codex_hook.py --platform windows
+   py -3 scripts/install_codex_hook.py --platform windows --host codex
    ```
 
-   Substitute the discovered Python if needed. The helper registers only Codex,
-   honors `CODEX_HOME`, and stores an absolute command for that interpreter and
-   runtime in `hooks.json`. The Windows launcher explicitly uses built-in
-   PowerShell with `-NoProfile`; paths are literal and JSON stays on stdin.
-   No Linux launcher is installed. `--config` and `--dest` select explicit paths
-   for isolated checks or non-default installations. Existing unrelated hooks,
-   user configuration and incident history are preserved. A unique config backup
-   path is printed. Repeating installation replaces this hook, not duplicates it.
-   Close editors changing `hooks.json` during setup. Concurrent helper runs are
-   serialized; outside edits detected before replacement abort the update, but
-   uncoordinated external editors do not share its lock.
-4. Native Windows registration for Claude/Kimi/OpenCode is **not established by
-   this helper**. Do not write a Codex hook into their configuration or silently
-   switch to WSL. Inspect the selected host's current Windows hook contract before
-   extending its adapter. The existing Linux adapters remain available on Linux.
+   For **Claude Code**, run:
+
+   ```powershell
+   py -3 scripts/install_codex_hook.py --platform windows --host claude
+   ```
+
+   Substitute the discovered Python if needed. The helper registers only the
+   selected host, honors `CODEX_HOME` (Codex) or `CLAUDE_CONFIG_DIR` (Claude
+   Code), and stores an absolute command for that interpreter and runtime in
+   `hooks.json` (Codex) or `settings.json` (Claude Code). The Windows launcher
+   explicitly uses built-in PowerShell with `-NoProfile`; paths are literal and
+   JSON stays on stdin. No Linux launcher is installed. `--config` and `--dest`
+   select explicit paths for isolated checks or non-default installations.
+   Existing unrelated hooks, user configuration and incident history are
+   preserved. A unique config backup path is printed. Repeating installation
+   replaces this hook, not duplicates it. Close editors changing the config
+   file during setup. Concurrent helper runs are serialized; outside edits
+   detected before replacement abort the update, but uncoordinated external
+   editors do not share its lock. For Claude Code, the helper also copies
+   `skills/zaebal` next to the config file so `/zaebal` works; removal deletes
+   that copy.
+4. Native Windows registration for Kimi/OpenCode is **not established by this
+   helper**. Do not write a Codex/Claude hook into their configuration or
+   silently switch to WSL. Inspect the selected host's current Windows hook
+   contract before extending its adapter. The existing Linux adapters remain
+   available on Linux.
 
 ## Verify and activate
 
@@ -42,9 +53,10 @@ Run `py -3 -X utf8 -m unittest discover -s tests -p test_cross_platform.py` from
 the checkout. This short smoke suite uses temporary config/state directories,
 executes the registered Windows command, and does not start a paid auditor.
 
-After a requested live installation, use Codex `/hooks` to review/trust the
-registered source if the installed version requires it, then start a fresh
-session and verify that a controlled complaint injects `<zaebal level="1">`.
+After a requested live installation, use Codex `/hooks` (or Claude Code
+`/hooks`) to review/trust the registered source if the installed version
+requires it, then start a fresh session and verify that a controlled
+complaint injects `<zaebal level="1">`.
 An ordinary message must stay silent. Do not automatically run an audit protocol
 because a test fixture contains a complaint. Do not equate a standalone core run
 with proof that the user's host loaded the hook. If a live check is unavailable,
@@ -62,7 +74,7 @@ Update from one matching checkout by repeating the selected install command.
 To unregister only this hook:
 
 ```powershell
-py -3 scripts/install_codex_hook.py --platform windows --remove
+py -3 scripts/install_codex_hook.py --platform windows --host <codex|claude> --remove
 ```
 
 Repeat any custom `--config`/`--dest` arguments used at installation. Removal

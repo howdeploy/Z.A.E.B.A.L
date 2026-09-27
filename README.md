@@ -143,11 +143,12 @@ only the reference for the target process OS, selects the requested host and
 registers its command once. Native Windows needs neither WSL nor Bash; Linux
 needs no Windows tooling. The shared runtime uses Python 3.10+ stdlib only.
 
-The new selected-host helper supports **Codex on native Windows and Linux**.
-Existing Linux integrations for Claude, Kimi and OpenCode remain unchanged;
-this does not claim native Windows validation for those hosts. Platform smoke
-checks execute the installed command in temporary configuration/state, without
-calling a model. A live host activation check is a separate step.
+The new selected-host helper supports **Codex and Claude Code on native
+Windows and Linux**. Existing Linux integrations for Kimi and OpenCode remain
+unchanged; this does not claim native Windows validation for those hosts.
+Platform smoke checks execute the installed command in temporary
+configuration/state, without calling a model. A live host activation check is
+a separate step.
 
 ### Existing multi-host Unix installer
 
@@ -326,8 +327,9 @@ end-to-end protocol injection.
   or false negatives.
 - The detector does not identify non-profane action loops; adding a general loop detector
   would be a separate product with its own false-positive model.
-- Native Windows host integration is currently verified for Codex only; other hosts
-  require their own adapter validation. State locking uses native `fcntl` / `msvcrt`.
+- Native Windows host integration is currently verified for Codex and Claude Code
+  only; other hosts require their own adapter validation. State locking uses
+  native `fcntl` / `msvcrt`.
 - Built-in Kimi and OpenCode auditors have no enforced read-only mode and are refused by
   default. `allow_unsafe_auditor: true` is an explicit unsafe opt-in.
 - On a detected trigger, the OpenCode adapter stores a mode-`0600` text snapshot of the

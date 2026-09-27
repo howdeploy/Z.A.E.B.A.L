@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Register only the Codex hook selected by the installing agent.
+"""Register the hook for Codex or Claude Code, sharing one JSON-merge helper.
 
 The agent reads the OS-specific skill reference first. This helper performs
 the fragile JSON merge; it does not discover hosts or install dependencies.
+File name kept as install_codex_hook.py (tests and skill docs reference it);
+--host selects the target (default codex, so existing invocations are unchanged).
 """
 
 import argparse
@@ -20,11 +22,11 @@ from platform_runtime import shell_command, state_lock
 MARKER = "Z.A.E.B.A.L. self-audit"
 
 
-def is_ours(handler):
+def is_ours(handler, host):
     if handler.get("statusMessage") == MARKER:
         return True
-    # Migrate the exact legacy template, not any command mentioning zaebal.
-    return handler.get("command") == "python3 ~/.zaebal/core/zaebal.py --host codex"
+    # Migrate the exact legacy template for this host, not any command mentioning zaebal.
+    return handler.get("command") == f"python3 ~/.zaebal/core/zaebal.py --host {host}"
 
 
 def write_json(path, data, expected=Ellipsis):
@@ -44,13 +46,13 @@ def write_json(path, data, expected=Ellipsis):
             os.unlink(temporary)
 
 
-def install(config, dest, remove=False):
+def install(config, dest, remove=False, host="codex"):
     # Other setup runs share this lock; external editors must stay closed.
     with state_lock(config.with_name(config.name + ".zaebal.lock")):
-        return _install(config, dest, remove)
+        return _install(config, dest, remove, host)
 
 
-def _install(config, dest, remove):
+def _install(config, dest, remove, host):
     original = config.read_bytes() if config.exists() else None
     if remove and original is None:
         return {"config": str(config), "backup": None, "command": None, "removed": True}
@@ -64,7 +66,7 @@ def _install(config, dest, remove):
         retained = []
         for group in groups:
             handlers = group.get("hooks", [])
-            filtered = [h for h in handlers if not is_ours(h)]
+            filtered = [h for h in handlers if not is_ours(h, host)]
             if len(filtered) == len(handlers):
                 retained.append(group)
             elif filtered:
@@ -75,7 +77,7 @@ def _install(config, dest, remove):
     if not remove:
         command = shell_command([
             sys.executable, "-X", "utf8", str(dest / "core" / "zaebal.py"),
-            "--host", "codex",
+            "--host", host,
         ])
         hooks.setdefault("UserPromptSubmit", []).append({"hooks": [{
             "type": "command", "command": command,
@@ -96,6 +98,13 @@ def _install(config, dest, remove):
         with os.fdopen(fd, "wb") as handle:
             handle.write(original)
     write_json(config, data, expected=original)
+    # Skill copy/removal happens only after the hook write is confirmed, so a
+    # rejected write (outside edit detected) never desyncs skill from hook.
+    if host == "claude":
+        skill_dest = config.parent / "skills" / "zaebal"
+        shutil.rmtree(skill_dest, ignore_errors=True)
+        if not remove:
+            shutil.copytree(ROOT / "skills" / "zaebal", skill_dest)
     return {"config": str(config), "backup": str(backup) if backup else None,
             "command": command, "removed": remove}
 
@@ -103,8 +112,9 @@ def _install(config, dest, remove):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=("windows", "linux"), required=True)
-    parser.add_argument("--config", type=Path,
-                        default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "hooks.json")
+    parser.add_argument("--host", choices=("codex", "claude"), default="codex")
+    parser.add_argument("--config", type=Path, default=None,
+                        help="defaults to the selected host's own config path")
     parser.add_argument("--dest", type=Path, default=Path.home() / ".zaebal")
     parser.add_argument("--remove", action="store_true",
                         help="unregister only this hook; preserve runtime and user data")
@@ -112,7 +122,14 @@ def main():
     actual = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else None
     if args.platform != actual:
         parser.error("selected instruction does not match this Python runtime OS")
-    result = install(args.config.expanduser().resolve(), args.dest.expanduser().resolve(), args.remove)
+    config = args.config
+    if config is None:
+        if args.host == "claude":
+            config = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "settings.json"
+        else:
+            config = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "hooks.json"
+    result = install(config.expanduser().resolve(), args.dest.expanduser().resolve(),
+                     args.remove, host=args.host)
     print(json.dumps(result, ensure_ascii=True))
 
 

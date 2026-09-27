@@ -1,4 +1,4 @@
-"""Five offline smoke checks, shared by native Windows and Linux."""
+"""Offline smoke checks, shared by native Windows and Linux."""
 
 import concurrent.futures
 import json
@@ -73,6 +73,40 @@ class TestCrossPlatform(unittest.TestCase):
         self.assertEqual(remaining["hooks"]["Stop"], [{"hooks": []}])
         self.assertEqual(remaining["description"], "keep")
         self.assertTrue((self.dest / "core" / "zaebal.py").exists())
+
+    def test_claude_host_registers_and_preserves_settings(self):
+        claude_config = self.root / "claude" / "settings.json"
+        other_tool_hook = {"type": "command", "command": "echo untouched"}
+        installer.write_json(claude_config, {
+            "permissions": {"allow": ["Bash(echo:*)"]},
+            "model": "opus",
+            "hooks": {"PreToolUse": [{"hooks": [other_tool_hook]}]},
+        })
+        installer.install(claude_config, self.dest, host="claude")
+        installer.install(claude_config, self.dest, host="claude")  # reinstall, not duplicate
+        data = json.loads(claude_config.read_text(encoding="utf-8"))
+        self.assertEqual(data["permissions"], {"allow": ["Bash(echo:*)"]})
+        self.assertEqual(data["model"], "opus")
+        self.assertEqual(data["hooks"]["PreToolUse"], [{"hooks": [other_tool_hook]}])
+        groups = data["hooks"]["UserPromptSubmit"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]["hooks"]), 1)
+        command = groups[0]["hooks"][0]["command"]
+        self.assertEqual(self.invoke("Привет", command=command), "")
+        self.assertIn('<zaebal level="1">', self.invoke("ты меня заебал", command=command))
+        skill_dest = claude_config.parent / "skills" / "zaebal"
+        self.assertTrue((skill_dest / "SKILL.md").is_file())
+
+        codex_config = self.root / "codex-other" / "hooks.json"
+        codex_command = installer.install(codex_config, self.dest)["command"]
+
+        installer.install(claude_config, self.dest, remove=True, host="claude")
+        remaining = json.loads(claude_config.read_text(encoding="utf-8"))
+        self.assertEqual(remaining["hooks"]["PreToolUse"], [{"hooks": [other_tool_hook]}])
+        self.assertEqual(remaining["hooks"]["UserPromptSubmit"], [])
+        self.assertFalse(skill_dest.exists())
+        codex_data = json.loads(codex_config.read_text(encoding="utf-8"))
+        self.assertEqual(codex_data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], codex_command)
 
     def test_parallel_processes_keep_every_trigger(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:

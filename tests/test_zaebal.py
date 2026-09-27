@@ -1116,7 +1116,7 @@ class TestAuditor(TempState):
 
 class TestEndToEnd(TempState):
     def run_core(self, payload, *argv, extra_env=None):
-        env = dict(os.environ, ZAEBAL_STATE_DIR=zaebal.STATE_DIR)
+        env = dict(os.environ, ZAEBAL_STATE_DIR=str(zaebal.STATE_DIR))
         env.update(extra_env or {})
         return subprocess.run(
             [sys.executable, str(CORE_DIR / "zaebal.py"), *argv],
@@ -1541,7 +1541,7 @@ class TestEndToEnd(TempState):
 
     def test_silence_and_failopen(self):
         self.assertEqual(self._prompt("t8", "сегодня хорошая погода"), "")
-        env = dict(os.environ, ZAEBAL_STATE_DIR=zaebal.STATE_DIR)
+        env = dict(os.environ, ZAEBAL_STATE_DIR=str(zaebal.STATE_DIR))
         r = subprocess.run(
             [sys.executable, str(CORE_DIR / "zaebal.py")],
             input="{not json", capture_output=True, text=True, env=env, timeout=15,
