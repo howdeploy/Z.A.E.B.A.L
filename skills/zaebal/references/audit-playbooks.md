@@ -10,9 +10,16 @@ Use one primary playbook and any secondary playbook that the failure crosses. Do
 6. `PREVIOUS AUDIT` — earlier claim → action actually taken → repeated symptom. Do this even without a new profanity trigger or after the streak resets/expires. Distinguish new requirements and work still in progress from a failed fix. Without new evidence, change approach instead of repeating the audit.
 7. `WRONG BELIEF` — established only after that check; otherwise `not established`.
 8. `STATUS` — `CONFIRMED`, `PARTIAL`, `UNVERIFIED`, or `DISPROVED` for the diagnosis only. Missing information, changed conditions, and environment limits need no invented wrong belief.
-9. `OUTCOME GATE` — exact user-visible artifact; result separately verified, partial, or unverified. A proxy test is intermediate evidence. Deliver an available result or requested handoff without unrelated cleanup or further audits once relevant required checks pass. Respect permissions and UI-test restrictions.
+9. `OUTCOME GATE` — exact user-visible artifact; result separately verified, partial, or unverified. Explicitly check: did the actual file/option/asset delta change the requested aspect and preserve the working baseline? A proxy test is intermediate evidence. Deliver an available result or requested handoff without unrelated cleanup or further audits once relevant required checks pass. Respect permissions and UI-test restrictions.
 
 For every playbook, inspect the session chronology before interpreting runtime artifacts. Map request/decision/action turns to working-tree and staged diffs and to timestamped commits. Context explains why an artifact exists; the artifact proves what actually changed. Neither evidence track may replace the other.
+
+Before a repair, briefly separate `WORKING / BROKEN / UNKNOWN` with sources. Trace
+each requirement to the intended aspect, actual diff/options/asset changes, and
+outcome evidence. Read back the final delta, including generated data. Identify
+any unrequested changed aspect and distinguish necessary dependencies from
+accidental deviations; preserve unrelated user work. Keep this within the existing
+audit output, not a separate project-management record.
 
 ## Code and runtime
 
@@ -24,6 +31,7 @@ Use for bugs, tests, services, containers, deploys, and “works locally but not
 - Find the conversation turn that selected or justified the failing implementation, then match it to the diff/commit that introduced it.
 - Map the request to the process that actually handles it. Enumerate duplicate local and in-scope server processes, containers, ports, routes, images, worktrees, and credentials.
 - Compare source → built artifact → installed/deployed artifact by version or hash.
+- Compare effective options before/after at the failing moment. Trace the last writer and any derived cache; initialization values can be overwritten by controllers or later events. Check whether the proposed change is already in effect.
 - Treat a passing unit test, green healthcheck, or quiet log as intermediate evidence only.
 - Outcome gate: the original failing request succeeds against the exact serving runtime.
 
@@ -37,6 +45,7 @@ Use for AGENTS.md, skills, hooks, config files, PATH, env variables, and startup
 - Match the conversation's claimed target path and reload assumption to the actual config diff and commit chronology.
 - Prove the host parsed and registered the entry with its own diagnostics/list command.
 - Identify reload semantics: immediate, new process, new session, or full restart.
+- Compare the config diff with effective values through the failing transition, including precedence, later writes and cached state. A parsed option can still be overridden or require a cache rebuild.
 - Run a unique canary through the host boundary and find the corresponding hook/log/incident artifact.
 - Outcome gate: the target process consumes the intended value and changes behavior.
 
@@ -75,6 +84,19 @@ Use when multiple workflows, models, branches, hosts, tabs, files, servers, or u
 - When UI and filesystem disagree, inspect both and identify which one the action actually mutated.
 - Outcome gate: the final artifact comes from the explicitly selected context, or the user explicitly approves a switch.
 
+## Graphics, 3D models, and motion
+
+Use for image layers/masks, mesh and garment edits, rigs, materials, animation,
+and asset conversion. Read the relevant [recovery examples](recovery-examples.md)
+when local repairs keep damaging the result.
+
+- Audit the construction method before adjusting more parameters. Identify which parts must stay rigid, deform, overlap or remain connected. Check that the chosen layers, topology, rig or simulation can express that behavior. Offsetting a garment from skin does not by itself construct its cut and folds; deforming one image does not by itself provide independent joints. Procedural work is valid when it preserves the required structure.
+- Identify the accepted baseline and the exact region/property to change. Preserve its required geometry, UVs, materials, weights, shape keys and controllers. For recovery, compare component-level deltas and restore only affected data; an entire older scene can erase later work.
+- Read the relevant target-format and application semantics. Distinguish raw mesh, evaluated deformation and exported/runtime state; inspect option precedence and cache rebuild requirements before copying parameters between them.
+- Match each check to the claimed property. Vertex/bone counts, connected topology, no detected intersections, or a clean rest pose do not establish anatomy, silhouette, fabric construction, material appearance or motion quality.
+- When inspection is authorized, inspect the assembled result in the relevant views and motion phases, including coupled regions and seams. Selected clean close-ups cannot establish that the whole assembly is clean. Use a representative part/pose to challenge the method before repeating a full rebuild. If visual inspection is unavailable or reserved for the user, leave that result unverified and hand over the exact artifact.
+- Outcome gate: the requested defect is corrected in the reviewed artifact while the accepted form and required motion remain intact. Static and dynamic results need separate evidence when both matter.
+
 ## Stochastic and gen-media pipelines
 
 Use for image, audio, video, LLM sampling, and any non-deterministic output.
@@ -95,3 +117,13 @@ Use for browser/UI operations, dashboards, third-party APIs, messages, uploads, 
 - Capture a screenshot, API response, object version, delivery receipt, or server-side log tied to the target.
 - Distinguish “click succeeded” from “state persisted” and “request accepted” from “downstream effect completed.”
 - Outcome gate: an independent read confirms the intended external state for the exact target.
+
+## Recovery workload
+
+Use when diagnosis or retries involve renders, builds, batch workers, benchmarks,
+or other expensive jobs. This checklist does not authorize their execution.
+
+- Account for jobs already running and whether another process duplicates the editor's project and caches. Prefer an existing suitable queue over another full copy when it meets the task.
+- Before a permitted run, choose the smallest useful workload, a concurrency/memory budget, a cancellation path and a stop condition. Leave capacity for the user's active work; do not stop unrelated jobs.
+- After overload or a memory stop, establish a relevant reduction before retrying: fewer workers, a smaller case, less duplicated state, or an effective supported limit. Confirm what the worker consumes; a written preference or environment variable alone is insufficient.
+- Outcome gate: the next check stays within its declared budget and produces evidence for the reported defect. A completed benchmark alone does not establish that the user's problem is fixed.

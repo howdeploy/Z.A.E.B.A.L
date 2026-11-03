@@ -49,10 +49,11 @@ Z.A.E.B.A.L. 在用户消息入口加入反馈闭环：
 
 - 粗口和直接抱怨会成为审计信号；
 - “fucking great” 这类带粗口的正面评价保持静默且不会增加连续权重，但不算确认，
-  也不会解除 L3 的修改暂停；
+  也不会解除 L3 或 L4 的修改暂停；
 - 信号反复出现时，协议会逐级升级，最终要求完全停止；
 - 在 L3，hook 会尝试启动技术上只读的外部审计；
-- 在 L3，只有用户明确确认后才恢复修改操作。
+- 在 L3 和 L4，只有用户明确确认后才恢复修改操作；
+- 在 L4，必须先获准启动具体的 Swarm Review 团队（5–7 个子智能体）。
 
 审计用于质疑智能体的理解，不会固定任务契约。它要求寻找能推翻解释的证据、
 指出下一步具体改变，并检查用户实际遇到的问题。即使没有新的粗口或计数已重置、
@@ -81,9 +82,9 @@ Z.A.E.B.A.L. 在用户消息入口加入反馈闭环：
 |---|---|---|
 | 多语言检测 | 检测俄语、英语和中文粗口，包括标点拆分与常见字符替换。 | `core/wordlists/{ru,en,zh}.txt` + NFKC 标准化 |
 | 意图分类 | 在修改连续触发状态前，区分正面评价、定向抱怨与不明确的情绪表达。 | `classify()`；权重 `0`、`1.0`、`0.5` |
-| 会话级升级 | 在 30 分钟滑动窗口内按会话记录信号，并选择 L1、L2 或 L3。 | 原子 JSON 状态 + 原生 `fcntl` / `msvcrt` 锁 |
-| 三层审计协议 | 注入逐渐严格的指令：独立检查、假设清单与完全停止。 | `core/protocol/L1.md` → `L3.md` |
-| 会话优先证据 | 要求工作智能体和两个内部审计智能体按时间顺序阅读会话、定位首次偏离，并与 diff 和带时间戳的提交对应。 | 路径在最前；无源文件时才附带有界摘录 |
+| 会话级升级 | 在 30 分钟滑动窗口内按会话记录信号，并选择 L1–L4。 | 原子 JSON 状态 + 原生 `fcntl` / `msvcrt` 锁 |
+| 四层审计协议 | 独立检查、假设清单、完全停止，以及须获同意的 swarm 提案。 | `core/protocol/L1.md` → `L4.md` |
+| 会话优先证据 | 要求按时间顺序阅读会话、定位首次偏离，并与 diff 和带时间戳的提交对应：L1–L3 由工作智能体和两个内部审计智能体执行，L4 由获准的团队执行。 | 路径在最前；无源文件时才附带有界摘录 |
 | 外部审计智能体 | 使用同厂商或跨厂商 CLI 检查会话源、定位摘录与仓库证据。 | Claude、Codex、Kimi 或 OpenCode |
 | 四个宿主适配器 | 在 Claude Code、Codex CLI、Kimi CLI 与 OpenCode 提交用户消息时触发。 | JSON hooks、TOML hook 或 TypeScript plugin |
 | 明确继续机制 | `continue`、`продолжай` 或 `по плану` 重置情绪计数并允许继续，但不证明问题已解决。 | 每个会话独立的状态 |
@@ -103,16 +104,17 @@ UserPromptSubmit / chat.message
 core/zaebal.py
 normalize → detect → classify
     │
-    ├─ clean / praise ──────────────────────────────► 静默
+    ├─ clean / praise ──────────────────────────────► 静默 / 已开启时注入 Early Review 提醒
     │
     └─ directed (+1.0) / ambiguous (+0.5)
                          │
                          ▼
                     会话连续状态
                          │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-             L1         L2         L3
+              ┌──────────┼──────────┬──────────┐
+              ▼          ▼          ▼          ▼
+             L1         L2         L3         L4
+              │          │          │          └─ 同意 → 5–7 名审查者
               │          │          ├─ 外部审计智能体
               └──────────┴──────────┴─ 协议注入上下文
 ```
@@ -123,7 +125,8 @@ normalize → detect → classify
 |---|---:|---|---|
 | **L1** | `0.5–1.5` | 阅读会话历史、定位首次偏离、执行两次独立内部审计并准备微型计划。 | 可选 |
 | **L2** | `2–3.5` | 重读会话时间线，启动两个新的内部审计，复核上次结论，并与原始需求逐项比较。 | 默认关闭 |
-| **L3** | `4+` | 停止所有非审计工作；执行两个内部审计及配置的外部审计，把完整触发序列与 Git 时间线对应，并等待确认。 | 默认尝试；不安全的内置审计器会被拒绝 |
+| **L3** | `4–7.5` | 停止所有非审计工作；执行两个内部审计及配置的外部审计，把完整触发序列与 Git 时间线对应，并等待确认。 | 默认尝试；不安全的内置审计器会被拒绝 |
+| **L4 — Swarm Review** | `8+` 或 `zaebal swarm` | 主动提议 swarm，询问 effort 和 5–7 名审查者的团队配置并请求启动同意；分析完整 diff、近期项目会话、抱怨、代码/runtime、设计、软件及修复/重构方案。 | 无论 `audit_levels` 如何设置，均不自动启动 |
 
 定向抱怨增加 `1.0`，没有检测到对象的粗口增加 `0.5`。窗口为 30 分钟。普通问题
 不会重置状态；正面评价也不会重置，只有明确同意继续才会重置。
@@ -192,18 +195,35 @@ scripts/kimi-host-canary.sh
 | `zaebal` / `zaebal config` | 显示设置，不启动审计 |
 | `zaebal auto off` / `zaebal auto on` | 关闭 / 开启自动粗口触发 |
 | `zaebal manual off` / `zaebal manual on` | 关闭 / 开启显式手动审计 |
-| `zaebal off` / `zaebal on` | 关闭 / 开启两种审计入口 |
+| `zaebal early off` / `zaebal early on` | 关闭 / 开启工作过程中的 Early Review |
+| `zaebal off` / `zaebal on` | 关闭 / 开启全部三种检查模式 |
 | `zaebal audit` | 执行一次手动审计，不增加粗口连续触发权重 |
+| `zaebal swarm` | 请求 L4 Swarm Review 提案；明确同意前不启动团队 |
 
-两个开关关闭后，设置仍可访问。单独的俄语 `заебал` 仍可能是抱怨；管理时请使用
+全部检查模式关闭后，设置仍可访问。单独的俄语 `заебал` 仍可能是抱怨；管理时请使用
 拉丁字母 `zaebal`。原生技能入口采用相同路由：
 [Claude Code](https://code.claude.com/docs/en/skills) `/zaebal`、
 [Codex](https://learn.chatgpt.com/docs/build-skills) `$zaebal`、
 [Kimi](https://moonshotai.github.io/kimi-cli/en/customization/skills.html) `/skill:zaebal`；
 在 [OpenCode](https://opencode.ai/docs/skills) 中请求智能体使用 `zaebal`。
 没有活动 hook 时，技能使用 `python3 ~/.zaebal/core/zaebal.py --control status`，
-或 `--control auto off` / `--control manual off`。安装器也会将技能复制到
+或 `--control auto off` / `--control manual off` / `--control early on`。安装器也会将技能复制到
 `~/.kimi/skills/zaebal/`，避免其他通用技能目录使 Kimi 忽略它。
+
+到达 L4 时，智能体会主动提议 **[Swarm Review](skills/zaebal/references/swarm-review.md)**，
+无需用户输入命令。先询问选择哪种受支持的推理 effort 和团队配置（5–7 名审查者及其角色，
+支持时也提供模型/厂商选项），说明取舍和资源预算，并请求明确的启动同意。
+MAX 是可选项，不会自动设置；仅选择配置不代表同意启动。使用用户选择的 effort 和团队，
+并发槽位不足时分批执行，如实报告限制。团队综合原因、覆盖缺口与具体修复/重构方案；团队启动的
+同意本身不授权任意修改、测试或部署。一次有界审查不会因每次触发而自动重启；命令
+本身或连续状态重置都不能替代启动同意。
+
+**Early Review** 默认关闭。开启后，hook 提醒智能体在首次实质结果或修改后、方法或目标
+改变时，以及昂贵或不可逆操作前，静默调用只读命令 `--early-review`。
+智能体核对请求、实际 diff/选项和原有正常行为；没有实质问题或需要用户决定的
+事项时，不单独报告。细小修改应合并检查，不重复检查没有变化的证据。
+该模式不增加粗口连续触发权重，不自动启动审计器，也不解除 STOP 或测试/访问限制。
+它是给智能体的指令，不是逐工具的技术锁或后台进程。
 
 默认值位于 [`core/config.json`](core/config.json)。用户覆盖配置位于
 `~/.zaebal/config.json`，所有宿主共享，在下一条消息时自动加载：
@@ -212,6 +232,7 @@ scripts/kimi-host-canary.sh
 {
   "auto_trigger": true,
   "manual_trigger": true,
+  "early_review": false,
   "auditor": "same",
   "audit_levels": [3],
   "auditor_timeout_sec": 90,
@@ -224,10 +245,11 @@ scripts/kimi-host-canary.sh
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
-| `auto_trigger` | `true` | 自动粗口检测及技能隐式启动的审计。 |
-| `manual_trigger` | `true` | 显式手动审计。关闭后仍可查看设置和帮助。 |
+| `auto_trigger` | `true` | 自动粗口检测及技能隐式启动的事件审计。 |
+| `manual_trigger` | `true` | `zaebal audit` 和 `zaebal swarm` 同意提案。关闭后仍可查看设置。 |
+| `early_review` | `false` | 工作过程中的静默检查，独立于抱怨和手动触发。使用 `zaebal early on` 开启。 |
 | `auditor` | `"same"` | 与宿主相同的厂商、指定 `kimi` / `claude` / `codex` / `opencode`，或 `"none"`。内置 Kimi/OpenCode 审计在未显式启用 unsafe 模式时会明确降级。 |
-| `audit_levels` | `[3]` | 同步调用外部审计器的级别；使用 `[2, 3]` 可以更早审计。 |
+| `audit_levels` | `[3]` | L1–L3 中同步调用外部审计器的级别；`[2, 3]` 可更早审计。L4 始终先请求启动同意。 |
 | `auditor_timeout_sec` | `90` | 等待审计结果的最长秒数。 |
 | `auditor_command` | `""` | 自定义命令；审计 prompt 会作为最后一个参数加入。 |
 | `allow_unsafe_auditor` | `false` | 允许没有强制只读模式的内置 Kimi/OpenCode 审计器。优先使用 Claude/Codex 或 sandboxed `auditor_command`。 |
@@ -249,7 +271,7 @@ zaebal/
 ├── core/
 │   ├── zaebal.py          # 检测、状态、升级、会话记录与审计器
 │   ├── config.json        # 默认运行时配置
-│   ├── protocol/          # L1.md、L2.md、L3.md
+│   ├── protocol/          # L1.md–L4.md、early-review.md
 │   └── wordlists/         # ru.txt、en.txt、zh.txt
 ├── adapters/
 │   ├── claude-code/       # JSON hook 示例

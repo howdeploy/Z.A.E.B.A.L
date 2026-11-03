@@ -94,3 +94,60 @@ fix followed by a regression exaggerated the failure rate.
 **Break the loop:** check chronology and what was actually claimed complete.
 Distinguish an ongoing repair, a newly clarified requirement, and a repeated
 failure after a claimed fix. A retrospective diagnosis is not a completion claim.
+
+## Parameter tuning replaced an audit of the construction method
+
+A garment was fitted by offsetting its vertices from the body. Clearance checks
+could pass while its silhouette remained an unwanted tight shell. In an animation,
+joint movement was approximated by deforming a single image; successive pin and
+mask corrections tore neighboring regions. Later layer repairs introduced extra
+cuts and invented backing pixels. Audits named local defects, but further versions
+continued modifying the same construction without establishing that it expressed
+the requested shape or independent movement.
+
+**Break the loop:** identify the required cut, joints, connections and overlaps;
+challenge the method on one representative region or motion phase before another
+full rebuild. Preserve accepted source layers/geometry. Counts, clearances and
+selected clean frames cannot establish the requested appearance. Inspect the
+assembled result only when authorized, otherwise hand it over as unverified.
+
+## A local repair lost working parts of the asset
+
+During repeated repairs to a character, rebuilding changed its calibration,
+weights, materials and physics, and a working facial controller disappeared.
+A seam check passed, but it did not establish that the rebuilt asset retained
+those earlier working components. Comparing the actual packages exposed the
+losses; another local seam correction could not restore them.
+
+**Break the loop:** briefly separate WORKING / BROKEN / UNKNOWN and name what
+must survive. Trace the requested aspect to actual component/option diffs. Ask:
+"Did I actually change that aspect, and what else changed?" Explain necessary
+dependencies and narrow accidental changes without replacing the entire current
+asset or reverting unrelated work. A repeated diagnosis is not a repair.
+
+## A loaded option was not the effective runtime state
+
+Hair-physics settings were adjusted while a runtime controller overwrote gravity.
+In a related repair, disabling a collider object did not rebuild the native spring
+buffer. Later plans also proposed disabling mechanisms that were already disabled
+in the delivered asset. The correct package and valid bindings did not establish
+which state the simulation actually consumed during the failing movement.
+
+**Break the loop:** inspect effective values at the failure, identify later
+writers and derived caches, and check the rebuild boundary. Compare before/after
+options and asset data before proposing the same change again. A rest-state
+correction does not prove dynamic behavior; keep that outcome unverified until
+the relevant permitted inspection.
+
+## Recovery duplicated the workload until memory ran out
+
+An editor already held a project and its caches. A second full renderer reached
+a memory stop. The agent wrote lower cache preferences and launched it again,
+reaching the stop again: that headless path did not load those preferences.
+The retry changed a file without establishing a reduction in the actual load.
+
+**Break the loop:** account for existing jobs and duplicated state, then use
+a suitable existing queue or a smaller bounded job when authorized. Verify that
+the worker consumes the intended limits and set a cancellation/stop condition.
+After overload, another attempt requires an effective load reduction. Do not
+attribute a system crash to the job without evidence or stop unrelated user work.

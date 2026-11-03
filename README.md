@@ -49,10 +49,12 @@ Z.A.E.B.A.L. adds a feedback loop to the user-message boundary:
 
 - profanity and direct complaints become an audit signal;
 - positive profanity such as “fucking great” is silent and does not add to the streak,
-  but does not authorize resuming a level-3 mutation stop;
+  but does not authorize resuming a level-3/4 mutation stop;
 - repeated signals escalate from a local protocol to a full stop;
 - at level 3, the hook attempts a technically read-only external audit;
 - at level 3, mutations resume only after an explicit user acknowledgment.
+- at level 4, the agent asks permission for a 5–7-reviewer Swarm Review before
+  launching any team or external auditor; repairs retain their own scope limits.
 
 The audit challenges the agent's interpretation; it does not freeze a task contract.
 It asks for a fact that could disprove the explanation, the next action that changes,
@@ -85,9 +87,9 @@ show whether a discipline-based STOP remains insufficient.
 |---|---|---|
 | Multilingual detection | Detects Russian, English, and Chinese profanity, including punctuation-separated and common leetspeak forms. | `core/wordlists/{ru,en,zh}.txt` + NFKC normalization |
 | Intent classification | Separates praise, directed complaints, and ambiguous frustration before changing the streak. | `classify()`; weights `0`, `1.0`, and `0.5` |
-| Session escalation | Tracks each session in a 30-minute sliding window and selects L1, L2, or L3. | Atomic JSON state + native `fcntl` / `msvcrt` lock |
-| Three audit protocols | Injects increasingly strict instructions: independent checks, assumption inventory, and full stop. | `core/protocol/L1.md` → `L3.md` |
-| Session-first evidence | Requires the working agent and two internal auditors to read the chronology, locate the first divergence, and correlate it with diffs and timestamped commits. | Locator first; inline excerpt only when no source file is available |
+| Session escalation | Tracks each session in a 30-minute sliding window and selects L1–L4. | Atomic JSON state + native `fcntl` / `msvcrt` lock |
+| Four audit protocols | Independent checks, assumption inventory, full stop, then a consent-gated swarm proposal. | `core/protocol/L1.md` → `L4.md` |
+| Session-first evidence | Requires independent chronology/diff review; L1–L3 use two internal auditors when allowed, L4 uses its approved team. | Locator first; inline excerpt only when no source file is available |
 | External auditor | Runs the same or a cross-vendor CLI against the session source, an orientation excerpt, and repository evidence. | Claude, Codex, Kimi, or OpenCode |
 | Four host adapters | Hooks Claude Code, Codex CLI, Kimi CLI, and OpenCode at user-message submission. | JSON hooks, TOML hook, or TypeScript plugin |
 | Explicit continuation | Resets the emotional streak after acknowledgment such as `continue`, `продолжай`, or `по плану`; does not certify resolution. | Existing per-session state |
@@ -107,16 +109,17 @@ UserPromptSubmit / chat.message
 core/zaebal.py
 normalize → detect → classify
     │
-    ├─ clean / praise ───────────────────────────────► silence
+    ├─ clean / praise ───────────────────────────────► silence / Early Review reminder if enabled
     │
     └─ directed (+1.0) / ambiguous (+0.5)
                          │
                          ▼
                 per-session streak
                          │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-             L1         L2         L3
+              ┌──────────┼──────────┬──────────┐
+              ▼          ▼          ▼          ▼
+             L1         L2         L3         L4
+              │          │          │          └─ consent → 5–7 reviewers
               │          │          ├─ external auditor
               └──────────┴──────────┴─ protocol injected into context
 ```
@@ -127,11 +130,23 @@ normalize → detect → classify
 |---|---:|---|---|
 | **L1** | `0.5–1.5` | Read session history, locate the first divergence, run two independent internal audits, and prepare a micro-plan. | Optional |
 | **L2** | `2–3.5` | Re-read the chronology, run two fresh internal audits, audit the previous conclusion, and compare against the original request. | Disabled by default |
-| **L3** | `4+` | Stop all non-audit work; run two internal audits plus the configured external audit, correlate the accusation streak with Git history, and wait for acknowledgment. | Attempted by default; unsafe built-ins are refused |
+| **L3** | `4–7.5` | Stop all non-audit work; run two internal audits plus the configured external audit, correlate the accusation streak with Git history, and wait for acknowledgment. | Attempted by default; unsafe built-ins are refused |
+| **L4 — Swarm Review** | `8+`, or `zaebal swarm` | Proactively offer a swarm; ask which effort and 5–7-reviewer setup to use and request launch consent. Assess the whole diff, recent project sessions, complaints, code/runtime, design and software; reconcile findings and a repair/refactoring plan. | No automatic launch, regardless of `audit_levels` |
 
 Directed complaints add `1.0`; profanity without a detected addressee adds `0.5`.
 The window is 30 minutes. Calm questions and praise do not reset it. Only an explicit
 continuation-bearing acknowledgment does.
+
+At L4, the agent itself offers [`Swarm Review`](skills/zaebal/references/swarm-review.md);
+the human does not need to type a command. It asks which supported reasoning effort
+and team setup to use (5–7 reviewers; models/vendors where selectable), explains
+the tradeoffs and requests explicit launch consent. MAX is a choice, not a default.
+Use the chosen setup and effort, reporting unavailable settings and running waves
+when slots are limited. A settings-only answer does not authorize launch.
+Team consent alone does not authorize refactoring, redesign, tests or deployment;
+repairs need authorization covering their concrete scope. One bounded pass ends
+with evidence, actual coverage, unresolved gaps and outcome gates. Repeated hooks
+do not start duplicate teams. The command and a counter reset are not launch consent.
 
 ## Install
 
@@ -219,10 +234,12 @@ shared core on Claude Code, Codex, Kimi CLI, and OpenCode:
 | `zaebal` / `zaebal config` | Show settings; no audit |
 | `zaebal auto off` / `zaebal auto on` | Disable / enable automatic profanity triggers |
 | `zaebal manual off` / `zaebal manual on` | Disable / enable explicitly requested audits |
-| `zaebal off` / `zaebal on` | Disable / enable both entry points |
+| `zaebal early off` / `zaebal early on` | Disable / enable Early Review during work |
+| `zaebal off` / `zaebal on` | Disable / enable all three review modes |
 | `zaebal audit` | Run one manual audit, without increasing the profanity streak |
+| `zaebal swarm` | Request an L4 Swarm Review proposal; no launch before explicit consent |
 
-Settings remain accessible when both switches are off. Bare Russian `заебал` still
+Settings remain accessible when all review modes are off. Bare Russian `заебал` still
 counts as a possible complaint; use Latin `zaebal` for management.
 Native skill entry points use the same routing:
 [Claude Code](https://code.claude.com/docs/en/skills) `/zaebal`,
@@ -230,8 +247,18 @@ Native skill entry points use the same routing:
 [Kimi](https://moonshotai.github.io/kimi-cli/en/customization/skills.html) `/skill:zaebal`;
 in [OpenCode](https://opencode.ai/docs/skills), ask the agent to use `zaebal`.
 Without a running hook, the skill uses `python3 ~/.zaebal/core/zaebal.py --control status`
-or `--control auto off` / `--control manual off`. Kimi also receives a native copy in
+or `--control auto off` / `--control manual off` / `--control early on`. Kimi also receives a native copy in
 `~/.kimi/skills/zaebal/` so another generic skills directory cannot hide it.
+
+**Early Review** is opt-in. On each task message the hook tells the agent to quietly
+invoke the read-only `--early-review` checkpoint after its first substantive result/change,
+when its approach/target changes, and before an expensive or irreversible action.
+The agent checks the actual request, diffs/options and working baseline, then
+continues without a separate report unless a material problem or user decision
+remains. Small edits are batched; unchanged evidence does not start another loop.
+This mode does not add to the streak or automatically launch auditors, and it
+does not lift STOP or test/access restrictions. It is an agent instruction, not
+a technical per-tool lock or a background process.
 
 Defaults live in [`core/config.json`](core/config.json). User overrides live in
 `~/.zaebal/config.json` and are loaded on the next message across all hosts:
@@ -240,6 +267,7 @@ Defaults live in [`core/config.json`](core/config.json). User overrides live in
 {
   "auto_trigger": true,
   "manual_trigger": true,
+  "early_review": false,
   "auditor": "same",
   "audit_levels": [3],
   "auditor_timeout_sec": 90,
@@ -252,10 +280,11 @@ Defaults live in [`core/config.json`](core/config.json). User overrides live in
 
 | Key | Default | Meaning |
 |---|---|---|
-| `auto_trigger` | `true` | Automatic profanity detection and implicit audits from the skill. |
-| `manual_trigger` | `true` | Explicit manual audits. Settings/help remain accessible when false. |
+| `auto_trigger` | `true` | Automatic profanity detection and implicit incident audits from the skill. |
+| `manual_trigger` | `true` | `zaebal audit` and `zaebal swarm` consent requests. Settings/help remain accessible when false. |
+| `early_review` | `false` | Quiet checkpoints during work, independent of complaint/manual triggers. Enable with `zaebal early on`. |
 | `auditor` | `"same"` | Same vendor as the host, a specific `kimi` / `claude` / `codex` / `opencode`, or `"none"`. Built-in Kimi/OpenCode auditing degrades visibly unless unsafe mode is explicitly enabled. |
-| `audit_levels` | `[3]` | Levels that synchronously invoke an external auditor. Use `[2, 3]` for earlier audits. |
+| `audit_levels` | `[3]` | External-auditor levels among L1–L3; `[2, 3]` enables earlier audits. L4 always asks separate launch consent. |
 | `auditor_timeout_sec` | `90` | Maximum time to wait for the auditor response. |
 | `auditor_command` | `""` | Custom command; the audit prompt is appended as the final argument. |
 | `allow_unsafe_auditor` | `false` | Opt in to built-in Kimi/OpenCode auditors even though those CLIs provide no enforced read-only mode. Prefer Claude/Codex or a sandboxed `auditor_command`. |
@@ -277,7 +306,7 @@ zaebal/
 ├── core/
 │   ├── zaebal.py          # detection, state, escalation, transcript and auditor
 │   ├── config.json        # default runtime configuration
-│   ├── protocol/          # L1.md, L2.md, L3.md
+│   ├── protocol/          # L1.md–L4.md, early-review.md
 │   └── wordlists/         # ru.txt, en.txt, zh.txt
 ├── adapters/
 │   ├── claude-code/       # JSON hook example

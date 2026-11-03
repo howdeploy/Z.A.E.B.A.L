@@ -307,6 +307,10 @@ class TestEscalation(TempState):
         self.assertEqual(zaebal.record_trigger("s", now + 1), (2.0, 2))
         self.assertEqual(zaebal.record_trigger("s", now + 2), (3.0, 2))
         self.assertEqual(zaebal.record_trigger("s", now + 3), (4.0, 3))
+        for index in range(4, 7):
+            self.assertEqual(zaebal.record_trigger("s", now + index), (index + 1.0, 3))
+        self.assertEqual(zaebal.record_trigger("s", now + 7, weight=0.5), (7.5, 3))
+        self.assertEqual(zaebal.record_trigger("s", now + 8, weight=0.5), (8.0, 4))
 
     def test_ambiguous_half_weight(self):
         now = time.time()
@@ -1172,13 +1176,55 @@ class TestEndToEnd(TempState):
                 send("zaebal off")
                 self.assertFalse(zaebal.load_config()["auto_trigger"])
                 self.assertFalse(zaebal.load_config()["manual_trigger"])
+                self.assertFalse(zaebal.load_config()["early_review"])
                 self.assertEqual(zaebal.STATE_FILE.read_bytes(), before)
                 send("zaebal on")
                 self.assertTrue(zaebal.load_config()["auto_trigger"])
                 self.assertTrue(zaebal.load_config()["manual_trigger"])
+                self.assertTrue(zaebal.load_config()["early_review"])
                 self.assertEqual(json.loads(zaebal.CONFIG_USER.read_text())["custom_key"], "preserve me")
                 zaebal.STATE_FILE.unlink()
                 zaebal.INCIDENTS_FILE.unlink()
+
+    def test_early_review_controls_and_checkpoints_preserve_incident_state(self):
+        for host in ("claude", "codex", "kimi", "opencode"):
+            with self.subTest(host=host):
+                self.set_config(auto_trigger=False, manual_trigger=False, custom_key="keep")
+                self.assertEqual(self.run_core({}, "--early-review").stdout, "")
+                enabled = self.run_core({"prompt": "zaebal early on"}, "--host", host)
+                self.assertIn("<zaebal-control>", enabled.stdout)
+                self.assertTrue(zaebal.load_config()["early_review"])
+                before = zaebal.CONFIG_USER.read_bytes()
+                for prompt in ("Implement this change", "ты меня заебал"):
+                    notice = self.run_core({"session_id": host, "prompt": prompt}, "--host", host)
+                    self.assertEqual(notice.returncode, 0, notice.stderr)
+                    self.assertIn("--early-review", notice.stdout)
+                    self.assertNotIn('<zaebal level=', notice.stdout)
+                check = self.run_core({}, "--early-review")
+                self.assertEqual(check.returncode, 0, check.stderr)
+                self.assertIn("<zaebal-early-review-check>", check.stdout)
+                self.assertEqual(zaebal.CONFIG_USER.read_bytes(), before)
+                self.assertFalse(zaebal.STATE_FILE.exists())
+                self.assertFalse(zaebal.INCIDENTS_FILE.exists())
+                disabled = self.run_core({"prompt": "zaebal early off"}, "--host", host)
+                self.assertEqual(disabled.returncode, 0, disabled.stderr)
+                self.assertEqual(self.run_core({}, "--early-review").stdout, "")
+                self.assertFalse(zaebal.load_config()["early_review"])
+                self.assertEqual(json.loads(zaebal.CONFIG_USER.read_text())["custom_key"], "keep")
+
+    def test_early_review_checkpoint_preserves_an_existing_level_three_stop(self):
+        self.set_config(early_review=True, audit_levels=[])
+        for _ in range(4):
+            self._prompt("early-active-stop", "ты заебал")
+        state = zaebal.STATE_FILE.read_bytes()
+        incidents = zaebal.INCIDENTS_FILE.read_bytes()
+        for _ in range(2):
+            check = self.run_core({}, "--early-review")
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(zaebal.STATE_FILE.read_bytes(), state)
+            self.assertEqual(zaebal.INCIDENTS_FILE.read_bytes(), incidents)
+        self.assertEqual(self.run_core({}, "--early-review", extra_env={"ZAEBAL_INTERNAL": "1"}).stdout, "")
+        self.assertIn('<zaebal level="3">', self._prompt("early-active-stop", "zaebal audit"))
 
     def test_native_invocation_aliases_and_read_only_probe(self):
         for prefix in ("zaebal", "/zaebal", "$zaebal", "/skill:zaebal"):
@@ -1383,6 +1429,44 @@ class TestEndToEnd(TempState):
         self.assertIn("<zaebal-session-context>", out)
         self.assertNotIn("<zaebal-verdict auditor=", out)
 
+    def test_swarm_command_requests_consent_without_launching_or_building_a_streak(self):
+        for host in ("claude", "codex", "kimi", "opencode"):
+            with self.subTest(host=host):
+                self.set_config(audit_levels=[])
+                result = self.run_core({"session_id": host, "prompt": "zaebal swarm"}, "--host", host)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('<zaebal level="4">', result.stdout)
+                self.assertIn("STOP AND REQUEST CONSENT", result.stdout)
+                self.assertNotIn('<zaebal-verdict auditor=', result.stdout)
+                self.assertFalse(zaebal.STATE_FILE.exists())
+                event = json.loads(zaebal.INCIDENTS_FILE.read_text().splitlines()[-1])
+                self.assertEqual((event["level"], event["kind"], event["weight"]), (4, "manual", 0))
+                self.assertFalse(event["auditor_invoked"])
+                self.set_config(manual_trigger=False)
+                disabled = self.run_core({"prompt": "zaebal swarm"}, "--host", host)
+                self.assertIn("Manual audit is disabled", disabled.stdout)
+                self.assertNotIn('<zaebal level=', disabled.stdout)
+
+    def test_level_four_never_calls_the_automatic_external_auditor(self):
+        cfg = {**zaebal.DEFAULT_CONFIG, "audit_levels": [4]}
+        out = io.StringIO()
+        with mock.patch.object(zaebal, "load_config", return_value=cfg), \
+             mock.patch.object(zaebal, "run_auditor") as auditor, \
+             contextlib.redirect_stdout(out):
+            zaebal.mode_prompt("codex", {"prompt": "zaebal swarm"})
+        auditor.assert_not_called()
+        self.assertIn('<zaebal level="4">', out.getvalue())
+
+    def test_eighth_directed_complaint_and_manual_audit_keep_level_four(self):
+        self.set_config(audit_levels=[])
+        for index in range(7):
+            out = self._prompt("four-levels", f"ты заебал {index}")
+        self.assertIn('<zaebal level="3">', out)
+        self.assertIn('<zaebal level="4">', self._prompt("four-levels", "ты снова заебал"))
+        before = zaebal.STATE_FILE.read_bytes()
+        self.assertIn('<zaebal level="4">', self._prompt("four-levels", "zaebal audit"))
+        self.assertEqual(zaebal.STATE_FILE.read_bytes(), before)
+
     def test_l3_auditor_verdict_injected(self):
         self.set_config(auditor_command=(
             f"{sys.executable} -c \"print({VALID_AUDIT_VERDICT!r})\""
@@ -1432,16 +1516,17 @@ class TestEndToEnd(TempState):
         out = self._prompt("t5", "ты опять заебал")
         self.assertIn('<zaebal level="1">', out)
 
-    def test_l3_bare_calm_words_and_praise_do_not_unlock_stop(self):
+    def test_calm_words_and_praise_do_not_unlock_high_level_stop(self):
         self.set_config(audit_levels=[])
         for i in range(4):
             self._prompt("strict-ack", f"ты заебал {i}")
-        for index, calm in enumerate((
-            "ок", "ладно", "хорошо", "давай", "lgtm", "заебись, работает",
+        for index, (calm, expected_level) in enumerate((
+            ("ок", 3), ("ладно", 3), ("хорошо", 3), ("давай", 4),
+            ("lgtm", 4), ("заебись, работает", 4),
         )):
             self.assertEqual(self._prompt("strict-ack", calm), "")
             out = self._prompt("strict-ack", f"ты заебал после calm {index}")
-            self.assertIn('<zaebal level="3">', out)
+            self.assertIn(f'<zaebal level="{expected_level}">', out)
         self.assertIn("Streak reset", self._prompt("strict-ack", "ок, продолжай"))
 
     def test_l3_negation_questions_and_meta_do_not_unlock_stop(self):
